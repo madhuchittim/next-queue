@@ -29,7 +29,6 @@ struct idpf_vport_max_q;
 #define IDPF_NO_FREE_SLOT		0xffff
 
 /* Default Mailbox settings */
-#define IDPF_NUM_FILTERS_PER_MSG	20
 #define IDPF_NUM_DFLT_MBX_Q		2	/* includes both TX and RX */
 #define IDPF_DFLT_MBX_Q_LEN		64
 #define IDPF_DFLT_MBX_ID		-1
@@ -47,20 +46,6 @@ struct idpf_vport_max_q;
 
 #define IDPF_VIRTCHNL_VERSION_MAJOR VIRTCHNL2_VERSION_MAJOR_2
 #define IDPF_VIRTCHNL_VERSION_MINOR VIRTCHNL2_VERSION_MINOR_0
-
-/**
- * struct idpf_mac_filter
- * @list: list member field
- * @macaddr: MAC address
- * @remove: filter should be removed (virtchnl)
- * @add: filter should be added (virtchnl)
- */
-struct idpf_mac_filter {
-	struct list_head list;
-	u8 macaddr[ETH_ALEN];
-	bool remove;
-	bool add;
-};
 
 /**
  * enum idpf_state - State machine to handle bring up
@@ -837,5 +822,6 @@ int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs);
 
 u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
 bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
+struct idpf_vport *idpf_vid_to_vport(struct idpf_adapter *adapter, u32 v_id);
 
 #endif /* !_IDPF_H_ */
