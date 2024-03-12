@@ -2,8 +2,9 @@
 /* Copyright (C) 2024 Intel Corporation */
 
 #include "idpf.h"
-#include "idpf_virtchnl.h"
+#include "idpf_netdev.h"
 #include "idpf_fltr.h"
+#include "idpf_virtchnl.h"
 
 /**
  * idpf_find_mac_filter - Search filter list for specific mac filter

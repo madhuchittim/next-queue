@@ -13,6 +13,7 @@ idpf-y := \
 	idpf_fltr.o		\
 	idpf_lib.o		\
 	idpf_main.o		\
+	idpf_netdev.o		\
 	idpf_singleq_txrx.o	\
 	idpf_txrx.o		\
 	idpf_virtchnl.o 	\

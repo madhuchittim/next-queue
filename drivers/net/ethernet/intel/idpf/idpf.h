@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2023 Intel Corporation */
+/* Copyright (C) 2024 Intel Corporation */
 
 #ifndef _IDPF_H_
 #define _IDPF_H_
@@ -121,26 +121,6 @@ enum idpf_vport_state {
 	__IDPF_VPORT_DOWN,
 	__IDPF_VPORT_UP,
 	__IDPF_VPORT_STATE_LAST,
-};
-
-/**
- * struct idpf_netdev_priv - Struct to store vport back pointer
- * @adapter: Adapter back pointer
- * @vport: Vport back pointer
- * @vport_id: Vport identifier
- * @vport_idx: Relative vport index
- * @state: See enum idpf_vport_state
- * @netstats: Packet and byte stats
- * @stats_lock: Lock to protect stats update
- */
-struct idpf_netdev_priv {
-	struct idpf_adapter *adapter;
-	struct idpf_vport *vport;
-	u32 vport_id;
-	u16 vport_idx;
-	enum idpf_vport_state state;
-	struct rtnl_link_stats64 netstats;
-	spinlock_t stats_lock;
 };
 
 /**
@@ -731,28 +711,6 @@ static inline bool idpf_is_reset_in_prog(struct idpf_adapter *adapter)
 }
 
 /**
- * idpf_netdev_to_vport - get a vport handle from a netdev
- * @netdev: network interface device structure
- */
-static inline struct idpf_vport *idpf_netdev_to_vport(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	return np->vport;
-}
-
-/**
- * idpf_netdev_to_adapter - Get adapter handle from a netdev
- * @netdev: Network interface device structure
- */
-static inline struct idpf_adapter *idpf_netdev_to_adapter(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	return np->adapter;
-}
-
-/**
  * idpf_is_feature_ena - Determine if a particular feature is enabled
  * @vport: Vport to check
  * @feature: Netdev flag to check
@@ -772,31 +730,6 @@ static inline bool idpf_is_feature_ena(const struct idpf_vport *vport,
 static inline u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter)
 {
 	return le16_to_cpu(adapter->caps.max_tx_hdr_size);
-}
-
-/**
- * idpf_vport_ctrl_lock - Acquire the vport control lock
- * @netdev: Network interface device structure
- *
- * This lock should be used by non-datapath code to protect against vport
- * destruction.
- */
-static inline void idpf_vport_ctrl_lock(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	mutex_lock(&np->adapter->vport_ctrl_lock);
-}
-
-/**
- * idpf_vport_ctrl_unlock - Release the vport control lock
- * @netdev: Network interface device structure
- */
-static inline void idpf_vport_ctrl_unlock(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	mutex_unlock(&np->adapter->vport_ctrl_lock);
 }
 
 void idpf_statistics_task(struct work_struct *work);
@@ -823,5 +756,9 @@ int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs);
 u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
 bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
 struct idpf_vport *idpf_vid_to_vport(struct idpf_adapter *adapter, u32 v_id);
+void idpf_vport_stop(struct idpf_vport *vport);
+int idpf_vport_manage_rss_lut(struct idpf_vport *vport);
+int idpf_vport_open(struct idpf_vport *vport, bool alloc_res);
+int idpf_send_ena_dis_loopback_msg(struct idpf_vport *vport);
 
 #endif /* !_IDPF_H_ */

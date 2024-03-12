@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2023 Intel Corporation */
+/* Copyright (C) 2024 Intel Corporation */
 
 #include "idpf.h"
+#include "idpf_netdev.h"
 
 /**
  * idpf_tx_singleq_csum - Enable tx checksum offloads
