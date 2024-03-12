@@ -16,5 +16,6 @@ idpf-y := \
 	idpf_netdev.o		\
 	idpf_singleq_txrx.o	\
 	idpf_txrx.o		\
+	idpf_vf_dev.o		\
 	idpf_virtchnl.o 	\
-	idpf_vf_dev.o
+	idpf_vport.o
