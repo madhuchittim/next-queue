@@ -330,6 +330,8 @@ void idpf_vport_rel(struct idpf_vport *vport);
 void idpf_vport_dealloc(struct idpf_vport *vport);
 u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
 bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
+int idpf_send_get_set_rss_key_msg(struct idpf_vport *vport, bool get);
+int idpf_send_get_set_rss_lut_msg(struct idpf_vport *vport, bool get);
 struct idpf_vport *idpf_vport_alloc(struct idpf_adapter *adapter,
 				    struct idpf_vport_max_q *max_q);
 void idpf_vport_init(struct idpf_vport *vport, struct idpf_vport_max_q *max_q);
@@ -339,5 +341,34 @@ int idpf_initiate_soft_reset(struct idpf_vport *vport,
 void idpf_handle_event_link(struct idpf_adapter *adapter,
 			    const struct virtchnl2_event *v2e);
 struct idpf_vport *idpf_vid_to_vport(struct idpf_adapter *adapter, u32 v_id);
+int idpf_vport_alloc_max_qs(struct idpf_adapter *adapter,
+			    struct idpf_vport_max_q *max_q);
+void idpf_vport_dealloc_max_qs(struct idpf_adapter *adapter,
+			       struct idpf_vport_max_q *max_q);
+int idpf_vport_adjust_qs(struct idpf_vport *vport);
+
+int idpf_send_delete_queues_msg(struct idpf_vport *vport);
+int idpf_send_enable_queues_msg(struct idpf_vport *vport);
+int idpf_send_disable_queues_msg(struct idpf_vport *vport);
+int idpf_send_config_queues_msg(struct idpf_vport *vport);
+
+u32 idpf_get_vport_id(struct idpf_vport *vport);
+int idpf_send_create_vport_msg(struct idpf_adapter *adapter,
+			       struct idpf_vport_max_q *max_q);
+int idpf_send_destroy_vport_msg(struct idpf_vport *vport);
+int idpf_send_enable_vport_msg(struct idpf_vport *vport);
+int idpf_send_disable_vport_msg(struct idpf_vport *vport);
+
+int idpf_check_supported_desc_ids(struct idpf_vport *vport);
+int idpf_send_get_rx_ptype_msg(struct idpf_vport *vport);
+int idpf_send_get_stats_msg(struct idpf_vport *vport);
+int idpf_send_map_unmap_queue_vector_msg(struct idpf_vport *vport, bool map);
+int idpf_vport_alloc_vec_indexes(struct idpf_vport *vport);
+int idpf_send_add_queues_msg(const struct idpf_vport *vport, u16 num_tx_q,
+			     u16 num_complq, u16 num_rx_q, u16 num_rx_bufq);
+int idpf_queue_reg_init(struct idpf_vport *vport);
+int idpf_vport_queue_ids_init(struct idpf_vport *vport);
+int idpf_vport_manage_rss_lut(struct idpf_vport *vport);
+int idpf_send_ena_dis_loopback_msg(struct idpf_vport *vport);
 
 #endif /* !_IDPF_VPORT_H_ */

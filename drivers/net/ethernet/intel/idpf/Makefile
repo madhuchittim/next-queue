@@ -18,4 +18,5 @@ idpf-y := \
 	idpf_txrx.o		\
 	idpf_vf_dev.o		\
 	idpf_virtchnl.o 	\
-	idpf_vport.o
+	idpf_vport.o		\
+	idpf_vport_config.o
