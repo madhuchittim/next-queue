@@ -1021,5 +1021,14 @@ netdev_tx_t idpf_tx_singleq_start(struct sk_buff *skb,
 bool idpf_rx_singleq_buf_hw_alloc_all(struct idpf_queue *rxq,
 				      u16 cleaned_count);
 int idpf_tso(struct sk_buff *skb, struct idpf_tx_offload_params *off);
+int idpf_vport_splitq_napi_poll(struct napi_struct *napi, int budget);
+void idpf_init_dim(struct idpf_q_vector *qv);
+irqreturn_t idpf_vport_intr_clean_queues(int __always_unused irq, void *data);
+void idpf_rxq_sw_queue_rel(struct idpf_rxq_group *rx_qgrp);
+int idpf_rx_desc_alloc(struct idpf_queue *rxq, bool bufq, s32 q_model);
+int idpf_rx_bufs_init(struct idpf_queue *rxbufq);
+void idpf_rx_desc_rel(struct idpf_queue *rxq, bool bufq, s32 q_model);
+int idpf_tx_desc_alloc(struct idpf_queue *tx_q, bool bufq);
+void idpf_tx_desc_rel(struct idpf_queue *txq, bool bufq);
 
 #endif /* !_IDPF_TXRX_H_ */
