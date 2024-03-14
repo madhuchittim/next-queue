@@ -907,3 +907,43 @@ void idpf_free_dma_mem(struct idpf_hw *hw, struct idpf_dma_mem *mem)
 	mem->va = NULL;
 	mem->pa = 0;
 }
+
+/**
+ * idpf_intr_init_vec_idx - Initialize the vector indexes
+ * @adapter: pointer to adapter struct
+ * @num_vecs: number of vectors
+ * @q_vectors: pointer to vectors
+ * @q_vector_idxs: pointer to vector indexes
+ *
+ * Initialize vector indexes with values returened over mailbox
+ */
+int idpf_intr_init_vec_idx(struct idpf_adapter *adapter,
+			   u16 num_vecs, struct idpf_q_vector *q_vectors,
+			   u16 *q_vector_idxs)
+{
+	struct virtchnl2_alloc_vectors *ac;
+	u16 *vecids, total_vecs;
+	int i;
+
+	ac = adapter->req_vec_chunks;
+	if (!ac) {
+		for (i = 0; i < num_vecs; i++)
+			q_vectors[i].v_idx = q_vector_idxs[i];
+
+		return 0;
+	}
+
+	total_vecs = idpf_get_reserved_vecs(adapter);
+	vecids = kcalloc(total_vecs, sizeof(u16), GFP_KERNEL);
+	if (!vecids)
+		return -ENOMEM;
+
+	idpf_get_vec_ids(adapter, vecids, total_vecs, &ac->vchunks);
+
+	for (i = 0; i < num_vecs; i++)
+		q_vectors[i].v_idx = vecids[q_vector_idxs[i]];
+
+	kfree(vecids);
+
+	return 0;
+}

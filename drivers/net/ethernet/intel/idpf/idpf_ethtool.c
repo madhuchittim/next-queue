@@ -1291,7 +1291,7 @@ static u32 idpf_get_msglevel(struct net_device *netdev)
 {
 	struct idpf_adapter *adapter = idpf_netdev_to_adapter(netdev);
 
-	return adapter->msg_enable;
+	return adapter->eth_shared.msg_enable;
 }
 
 /**
@@ -1306,7 +1306,7 @@ static void idpf_set_msglevel(struct net_device *netdev, u32 data)
 {
 	struct idpf_adapter *adapter = idpf_netdev_to_adapter(netdev);
 
-	adapter->msg_enable = data;
+	adapter->eth_shared.msg_enable = data;
 }
 
 /**

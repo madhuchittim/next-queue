@@ -18,6 +18,7 @@ enum idpf_vport_reset_cause;
 #include <net/gro.h>
 #include <linux/dim.h>
 
+#include "idpf_eth_idc.h"
 #include "virtchnl2.h"
 #include "idpf_lan_txrx.h"
 #include "idpf_vport.h"
@@ -144,36 +145,6 @@ struct idpf_dev_ops {
 };
 
 /**
- * enum idpf_vport_reset_cause - Vport soft reset causes
- * @IDPF_SR_Q_CHANGE: Soft reset queue change
- * @IDPF_SR_Q_DESC_CHANGE: Soft reset descriptor change
- * @IDPF_SR_MTU_CHANGE: Soft reset MTU change
- * @IDPF_SR_RSC_CHANGE: Soft reset RSC change
- */
-enum idpf_vport_reset_cause {
-	IDPF_SR_Q_CHANGE,
-	IDPF_SR_Q_DESC_CHANGE,
-	IDPF_SR_MTU_CHANGE,
-	IDPF_SR_RSC_CHANGE,
-};
-
-/**
- * struct idpf_vector_info - Utility structure to pass function arguments as a
- *			     structure
- * @num_req_vecs: Vectors required based on the number of queues updated by the
- *		  user via ethtool
- * @num_curr_vecs: Current number of vectors, must be >= @num_req_vecs
- * @index: Relative starting index for vectors
- * @default_vport: Vectors are for default vport
- */
-struct idpf_vector_info {
-	u16 num_req_vecs;
-	u16 num_curr_vecs;
-	u16 index;
-	bool default_vport;
-};
-
-/**
  * struct idpf_vector_lifo - Stack to maintain vector indexes used for vector
  *			     distribution algorithm
  * @top: Points to stack top i.e. next available vector index
@@ -201,10 +172,10 @@ struct idpf_vc_xn_manager;
 
 /**
  * struct idpf_adapter - Device data struct generated on probe
+ * @eth_shared: Ethernet and main adapter's shared struct
  * @pdev: PCI device struct given on probe
  * @virt_ver_maj: Virtchnl version major
  * @virt_ver_min: Virtchnl version minor
- * @msg_enable: Debug message level enabled
  * @mb_wait_count: Number of times mailbox was attempted initialization
  * @state: Init state machine
  * @flags: See enum idpf_flags
@@ -253,11 +224,12 @@ struct idpf_vc_xn_manager;
  * @vc_buf_lock: Lock to protect virtchnl buffer
  */
 struct idpf_adapter {
+	/* Do not move eth_shared location */
+	struct idpf_eth_shared eth_shared;
 	struct pci_dev *pdev;
 	u32 virt_ver_maj;
 	u32 virt_ver_min;
 
-	u32 msg_enable;
 	u32 mb_wait_count;
 	enum idpf_state state;
 	DECLARE_BITMAP(flags, IDPF_FLAGS_NBITS);
@@ -426,9 +398,6 @@ int idpf_intr_req(struct idpf_adapter *adapter);
 void idpf_intr_rel(struct idpf_adapter *adapter);
 u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter);
 void idpf_deinit_task(struct idpf_adapter *adapter);
-int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
-				u16 *q_vector_idxs,
-				struct idpf_vector_info *vec_info);
 void idpf_set_ethtool_ops(struct net_device *netdev);
 void idpf_vport_intr_write_itr(struct idpf_q_vector *q_vector,
 			       u16 itr, bool tx);

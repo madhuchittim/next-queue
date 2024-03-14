@@ -219,7 +219,8 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	}
 
 	/* setup msglvl */
-	adapter->msg_enable = netif_msg_init(-1, IDPF_AVAIL_NETIF_M);
+	adapter->eth_shared.msg_enable = netif_msg_init(-1,
+							IDPF_AVAIL_NETIF_M);
 
 	err = idpf_cfg_hw(adapter);
 	if (err) {

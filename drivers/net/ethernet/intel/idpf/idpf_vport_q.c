@@ -1180,42 +1180,6 @@ static void idpf_vport_intr_map_vector_to_qs(struct idpf_vport *vport)
 }
 
 /**
- * idpf_vport_intr_init_vec_idx - Initialize the vector indexes
- * @vport: virtual port
- *
- * Initialize vector indexes with values returened over mailbox
- */
-static int idpf_vport_intr_init_vec_idx(struct idpf_vport *vport)
-{
-	struct idpf_adapter *adapter = vport->adapter;
-	struct virtchnl2_alloc_vectors *ac;
-	u16 *vecids, total_vecs;
-	int i;
-
-	ac = adapter->req_vec_chunks;
-	if (!ac) {
-		for (i = 0; i < vport->num_q_vectors; i++)
-			vport->q_vectors[i].v_idx = vport->q_vector_idxs[i];
-
-		return 0;
-	}
-
-	total_vecs = idpf_get_reserved_vecs(adapter);
-	vecids = kcalloc(total_vecs, sizeof(u16), GFP_KERNEL);
-	if (!vecids)
-		return -ENOMEM;
-
-	idpf_get_vec_ids(adapter, vecids, total_vecs, &ac->vchunks);
-
-	for (i = 0; i < vport->num_q_vectors; i++)
-		vport->q_vectors[i].v_idx = vecids[vport->q_vector_idxs[i]];
-
-	kfree(vecids);
-
-	return 0;
-}
-
-/**
  * idpf_vport_intr_napi_add_all- Register napi handler for all qvectors
  * @vport: virtual port structure
  */
@@ -1323,7 +1287,8 @@ int idpf_vport_intr_init(struct idpf_vport *vport)
 	char *int_name;
 	int err;
 
-	err = idpf_vport_intr_init_vec_idx(vport);
+	err = idpf_intr_init_vec_idx(vport->adapter, vport->num_q_vectors,
+				     vport->q_vectors, vport->q_vector_idxs);
 	if (err)
 		return err;
 
