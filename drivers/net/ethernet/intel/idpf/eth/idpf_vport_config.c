@@ -18,7 +18,7 @@ static int idpf_wait_for_marker_event(struct idpf_vport *vport)
 	int event;
 	int i;
 
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
 	for (i = 0; i < vport->num_txq; i++)
 		set_bit(__IDPF_Q_SW_MARKER, vport->txqs[i]->flags);
 
@@ -616,7 +616,7 @@ int idpf_send_create_vport_msg(struct idpf_eth_adapter *adapter,
 	ssize_t reply_sz;
 	u16 idx;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	buf_size = sizeof(struct virtchnl2_create_vport);
 	if (!adapter->vport_params_reqd) {
 		adapter->vport_params_reqd = kzalloc(buf_size,
@@ -697,7 +697,7 @@ int idpf_check_supported_desc_ids(struct idpf_vport *vport)
 	u64 rx_desc_ids, tx_desc_ids;
 	struct device *dev;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	vport_msg = adapter->vport_params_recvd;
 
 	rx_desc_ids = le64_to_cpu(vport_msg->rx_desc_ids);

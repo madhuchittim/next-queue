@@ -10,6 +10,27 @@ MODULE_DESCRIPTION(DRV_SUMMARY);
 MODULE_LICENSE("GPL");
 
 /**
+ * idpf_alloc_adapter - Allocate devlink and return adapter structure pointer
+ * @dev: the device to allocate for
+ *
+ * Allocate a devlink instance for this device and return the private area as
+ * the PF structure. The devlink memory is kept track of through devres by
+ * adding an action to remove it when unwinding.
+ */
+static struct idpf_adapter *idpf_alloc_adapter(struct device *dev)
+{
+	static struct devlink_ops idpf_devlink_ops = {};
+	struct devlink *devlink;
+
+	devlink = devlink_alloc(&idpf_devlink_ops,
+				sizeof(struct idpf_adapter), dev);
+	if (!devlink)
+		return NULL;
+
+	return devlink_priv(devlink);
+}
+
+/**
  * idpf_remove - Device removal routine
  * @pdev: PCI device information struct
  */
@@ -28,12 +49,13 @@ static void idpf_remove(struct pci_dev *pdev)
 	if (adapter->num_vfs)
 		idpf_sriov_configure(pdev, 0);
 
-	if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)))
+	if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)) &&
+	    !test_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter))) {
 		idpf_vc_xn_shutdown(adapter->vcxn_mngr);
+		set_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter));
+	}
 
-	idpf_eth_idc_dispatch_event(adapter, IDPF_ETH_IDC_EVENT_ALL_VPORTS,
-				    IDPF_ETH_IDC_EVENT_REMOVE, NULL);
-
+	idpf_eth_idc_device_deinit(adapter);
 	idpf_vc_core_deinit(adapter);
 
 	/* Be a good citizen and leave the device clean on exit */
@@ -53,10 +75,11 @@ static void idpf_remove(struct pci_dev *pdev)
 	mutex_destroy(&adapter->queue_lock);
 	mutex_destroy(&adapter->vc_buf_lock);
 
-	pci_set_drvdata(pdev, NULL);
-	idpf_eth_idc_driver_unregister(adapter);
 	idpf_eth_idc_deinit_shared(&adapter->eth_shared);
-	kfree(adapter);
+	pci_set_drvdata(pdev, NULL);
+
+	devl_unregister(priv_to_devlink(adapter));
+	devlink_free(priv_to_devlink(adapter));
 }
 
 /**
@@ -107,7 +130,7 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct idpf_adapter *adapter;
 	int err;
 
-	adapter = kzalloc(sizeof(*adapter), GFP_KERNEL);
+	adapter = idpf_alloc_adapter(dev);
 	if (!adapter)
 		return -ENOMEM;
 
@@ -152,6 +175,8 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, adapter);
+
+	devl_register(priv_to_devlink(adapter));
 
 	adapter->serv_wq = alloc_workqueue("%s-%s-service", 0, 0,
 					   dev_driver_string(dev),
@@ -224,7 +249,6 @@ err_mbx_wq_alloc:
 	destroy_workqueue(adapter->serv_wq);
 err_serv_wq_alloc:
 err_free:
-	idpf_eth_idc_driver_unregister(adapter);
 	idpf_eth_idc_deinit_shared(&adapter->eth_shared);
 	kfree(adapter);
 	return err;
@@ -247,4 +271,35 @@ static struct pci_driver idpf_driver = {
 	.remove			= idpf_remove,
 	.shutdown		= idpf_shutdown,
 };
-module_pci_driver(idpf_driver);
+
+/**
+ * idpf_driver_register - Device registration routine
+ * @void: void
+ *
+ * Returns 0 on success, otherwise function returned on failure
+ */
+static int __init idpf_driver_register(void)
+{
+	int err;
+
+	err = idpf_eth_idc_driver_register();
+	if (err)
+		return err;
+
+	return  pci_register_driver(&idpf_driver);
+}
+
+/**
+ * idpf_driver_unregister - Device unregister routine
+ * @void: void
+ *
+ * Returns void
+ */
+static void __exit idpf_driver_unregister(void)
+{
+	idpf_eth_idc_driver_unregister();
+	pci_unregister_driver(&idpf_driver);
+}
+
+module_init(idpf_driver_register);
+module_exit(idpf_driver_unregister);

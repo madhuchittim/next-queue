@@ -171,6 +171,7 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 	netdev->hw_enc_features |= dflt_features | offloads;
 	idpf_set_ethtool_ops(netdev);
 	SET_NETDEV_DEV(netdev, dev);
+	SET_NETDEV_DEVLINK_PORT(netdev, &adapter->devl_port);
 
 	/* carrier off on init to avoid Tx hangs */
 	netif_carrier_off(netdev);
@@ -319,7 +320,7 @@ static void idpf_set_rx_mode(struct net_device *netdev)
 	int err;
 
 	adapter = np->adapter;
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	caps = &adapter->dev_info->caps;
 
 	if (idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,
@@ -392,7 +393,7 @@ static int idpf_set_features(struct net_device *netdev,
 	idpf_vport_ctrl_lock(netdev);
 
 	adapter = np->adapter;
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	if (test_bit(IDPF_ETH_RESET_IN_PROG, adapter->flags)) {
 		dev_err(dev,
 			"Device is resetting, changing netdev features temporarily unavailable.\n");
@@ -573,7 +574,7 @@ static int idpf_set_mac(struct net_device *netdev, void *p)
 	}
 
 	vport = idpf_netdev_to_vport(netdev);
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
 	caps = idpf_eth_caps(vport->adapter);
 
 	if (!idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,

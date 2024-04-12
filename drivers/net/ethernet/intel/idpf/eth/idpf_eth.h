@@ -12,6 +12,7 @@
 #include <linux/sctp.h>
 #include <linux/ethtool_netlink.h>
 #include <net/gro.h>
+#include <net/devlink.h>
 #include <linux/dim.h>
 
 #include "virtchnl2.h"
@@ -46,6 +47,7 @@ enum idpf_eth_flags {
  * @stats_wq: Workqueue for statistics task
  * @vports: Array to store vports created by the driver
  * @netdevs: Associated Vport netdevs
+ * @devl_port: Devlink port
  * @vport_params_reqd: Vport params requested
  * @vport_params_recvd: Vport params received
  * @vport_config: Vport config parameters
@@ -68,6 +70,7 @@ struct idpf_eth_adapter {
 	struct workqueue_struct *stats_wq;
 	struct idpf_vport *vport;
 	struct net_device *netdev;
+	struct devlink_port devl_port;
 	struct virtchnl2_create_vport *vport_params_reqd;
 	struct virtchnl2_create_vport *vport_params_recvd;
 	struct idpf_vport_config *vport_config;
@@ -90,6 +93,25 @@ struct idpf_eth_adapter {
 	(&((adapter)->dev_info->caps))
 #define idpf_user_config(adapter) \
 	(&(((adapter)->vport_config)->user_config))
+
+/**
+ * idpf_adapter_to_adev_dev - Get Auxiliary device structure
+ * @adapter: private data struct
+ *
+ * Returns dev struct.
+ */
+static inline
+struct device *idpf_adapter_to_adev_dev(struct idpf_eth_adapter *adapter)
+{
+	struct idpf_eth_idc_dev_info *idpf_eth_dev_info = adapter->dev_info;
+	struct idpf_eth_idc_auxiliary_dev *idpf_adev;
+
+	idpf_adev = container_of(idpf_eth_dev_info,
+				 struct idpf_eth_idc_auxiliary_dev,
+				 eth_info);
+
+	return &idpf_adev->adev.dev;
+}
 
 /**
  * idpf_adapter_to_pdev_dev - Get device structure

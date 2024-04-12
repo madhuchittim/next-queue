@@ -279,7 +279,7 @@ static int idpf_set_channels(struct net_device *netdev,
 	num_req_tx_q = ch->combined_count + ch->tx_count;
 	num_req_rx_q = ch->combined_count + ch->rx_count;
 
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
 	/* It's possible to specify number of queues that exceeds max.
 	 * Stack checks max combined_count and max [tx|rx]_count but not the
 	 * max combined_count + [tx|rx]_count. These checks should catch that.

@@ -634,6 +634,7 @@ static int idpf_init_hard_reset(struct idpf_adapter *adapter)
 
 	mutex_unlock(&adapter->reset_lock);
 
+	clear_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter));
 	clear_bit(IDPF_HR_RESET_IN_PROG, idpf_adapter_flags(adapter));
 
 	return 0;
@@ -683,8 +684,11 @@ void idpf_vc_event_task(struct work_struct *work)
 	    test_bit(IDPF_HR_DRV_LOAD, idpf_adapter_flags(adapter))) {
 		set_bit(IDPF_HR_RESET_IN_PROG, idpf_adapter_flags(adapter));
 	
-		if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)))
+		if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)) &&
+		    !test_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter))) {
 			idpf_vc_xn_shutdown(adapter->vcxn_mngr);
+			set_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter));
+		}
 
 		/* Notify ethernet layer of reset event */
 		idpf_eth_idc_dispatch_event(adapter,
@@ -798,6 +802,15 @@ void idpf_recv_eth_event(struct idpf_adapter *adapter,
 					   &adapter->vc_event_task,
 					   msecs_to_jiffies(10));
 		}
+		break;
+
+	case IDPF_ETH_IDC_EVENT_ETH_REMOVE_NOTIFY:
+		if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)) &&
+		    !test_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter))) {
+			idpf_vc_xn_shutdown(adapter->vcxn_mngr);
+			set_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter));
+		}
+
 		break;
 
 	default:

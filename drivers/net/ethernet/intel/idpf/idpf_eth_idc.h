@@ -12,11 +12,11 @@ enum idpf_eth_idc_event_code {
 	IDPF_ETH_IDC_EVENT_LINK_CHANGE,
 	IDPF_ETH_IDC_EVENT_RESET_INITIATED,
 	IDPF_ETH_IDC_EVENT_RESET_COMPLETE,
-	IDPF_ETH_IDC_EVENT_REMOVE,
 	IDPF_ETH_IDC_EVENT_POST_INIT,
 
 	/* Following requests are from auxiliary eth driver to main driver */
 	IDPF_ETH_IDC_EVENT_REQ_HARD_RESET,
+	IDPF_ETH_IDC_EVENT_ETH_REMOVE_NOTIFY,
 };
 
 /**
@@ -100,8 +100,6 @@ struct idpf_eth_shared {
 /**
  * struct idpf_eth_idc_dev_info - Ethernet driver's device information struct
  * @eth_shared: Ethernet shared data struct
- * @idpf_context: Lower driver's context for callback
- * @eth_context: Ethernet driver's context
  * @vport_type: Vport type
  * @caps: Auxiliary device capabilities
  * @vport_id: Vport ID of device
@@ -109,8 +107,6 @@ struct idpf_eth_shared {
  */
 struct idpf_eth_idc_dev_info {
 	struct idpf_eth_shared *eth_shared;
-	void *idpf_context;
-	void *eth_context;
 	enum idpf_vport_type vport_type;
 	struct idpf_eth_idc_auxiliary_dev_caps caps;
 	u32 vport_id;
@@ -129,21 +125,15 @@ struct idpf_eth_idc_auxiliary_dev {
 
 /**
  * struct idpf_eth_idc_auxiliary_driver - Ethernet driver info struct
- * @all_probe_pre_init_done: Flag to indicate probe of all vports
- * @max_vports: Maxumum number of vports
- * @default_vports: Available default number of ports
+ * @signature: Signature value
+ * @adrv: Auxiliary driver
  * @event_handler: Ethernet driver's event handler
  */
 struct idpf_eth_idc_auxiliary_driver {
+	unsigned long signature;
+	struct auxiliary_driver adrv;
 	void (*event_handler)(struct idpf_eth_idc_dev_info *dev_info,
 			      struct idpf_eth_idc_event *event);
 };
-
-#define idpf_dev_info_to_adapter(dev_info) \
-	((struct idpf_adapter *)((dev_info)->idpf_context))
-
-void idpf_eth_unregister(struct auxiliary_device *adev);
-int idpf_eth_device_add(struct auxiliary_device *adev,
-			const struct auxiliary_device_id *id);
 
 #endif /* !_IDPF_ETH_IDC_H_ */

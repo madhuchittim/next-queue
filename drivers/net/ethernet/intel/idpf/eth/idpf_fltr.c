@@ -268,7 +268,7 @@ int idpf_init_mac_addr(struct idpf_vport *vport,
 	struct device *dev;
 	int err;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	if (is_valid_ether_addr(vport->default_mac_addr)) {
 		eth_hw_addr_set(netdev, vport->default_mac_addr);
 		ether_addr_copy(netdev->perm_addr, vport->default_mac_addr);
@@ -322,7 +322,7 @@ static int idpf_mac_filter_async_handler(void *async_ctx,
 	int i;
 
 	adapter = (struct idpf_eth_adapter *)async_ctx;
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	/* if success we're done, we're only here if something bad happened */
 	if (!ctlq_msg->cookie.mbx.chnl_retval)
 		return 0;

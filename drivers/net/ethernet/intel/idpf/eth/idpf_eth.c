@@ -26,6 +26,63 @@ void idpf_eth_statistics_task(struct work_struct *work)
 }
 
 /**
+ * idpf_eth_devlink_port_register - Create a devlink port for this adapter
+ * @adapter: Idpf private data structure
+ *
+ * Create and register a devlink_port for ethernet adapter.
+ * This function has to be called under devl_lock.
+ *
+ * Return: zero on success or an error code on failure.
+ */
+static int idpf_eth_devlink_port_register(struct idpf_eth_adapter *adapter)
+{
+	struct idpf_eth_idc_dev_info *dev_info;
+	struct devlink_port_attrs attrs = {};
+	struct devlink *devlink;
+	struct device *dev;
+	int err;
+
+	dev_info = adapter->dev_info;
+	dev = idpf_adapter_to_adev_dev(adapter);
+
+	devlink = priv_to_devlink(adapter);
+	attrs.flavour = DEVLINK_PORT_FLAVOUR_VIRTUAL;
+	devlink_port_attrs_set(&adapter->devl_port, &attrs);
+
+	err = devl_port_register(devlink, &adapter->devl_port,
+				 dev_info->idx);
+	if (err) {
+		dev_err(dev, "Failed to create devlink port error %d\n", err);
+		return err;
+	}
+
+	return 0;
+}
+
+/**
+ * idpf_eth_devlink_alloc_adapter - Allocate devlink and return adapter
+ * structure pointer
+ * @dev: the device to allocate for
+ *
+ * Allocate a devlink instance for this device and return the private area as
+ * the PF structure. The devlink memory is kept track of through devres by
+ * adding an action to remove it when unwinding.
+ */
+static
+struct idpf_eth_adapter *idpf_eth_devlink_alloc_adapter(struct device *dev)
+{
+	static struct devlink_ops idpf_devlink_ops = {};
+	struct devlink *devlink;
+
+	devlink = devlink_alloc(&idpf_devlink_ops,
+				sizeof(struct idpf_eth_adapter), dev);
+	if (!devlink)
+		return NULL;
+
+	return devlink_priv(devlink);
+}
+
+/**
  * idpf_eth_adapter_alloc - Allocate ethernet adapter struct
  * @dev: Device struct
  */
@@ -33,7 +90,7 @@ static struct idpf_eth_adapter *idpf_eth_adapter_alloc(struct device *dev)
 {
 	struct idpf_eth_adapter *adapter;
 
-	adapter = kzalloc(sizeof(*adapter), GFP_KERNEL);
+	adapter = idpf_eth_devlink_alloc_adapter(dev);
 	if (!adapter)
 		return NULL;
 
@@ -128,7 +185,7 @@ static int idpf_eth_device_pre_init(struct idpf_eth_adapter *adapter)
 	int err;
 
 	dev_info = adapter->dev_info;
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	adapter->req_tx_splitq = true;
 	adapter->req_rx_splitq = true;
 	err = idpf_send_create_vport_msg(adapter, &dev_info->caps.q_info);
@@ -180,12 +237,12 @@ unwind_vports:
 }
 
 /**
- * idpf_eth_device_add - Adds ethernet device
- * @adev: Structure related to ethernet device information
+ * idpf_eth_probe - Probe ethernet device
+ * @adev: Structure related to auxiliary ethernet device
  * @id: auxiliary device id
  */
-int idpf_eth_device_add(struct auxiliary_device *adev,
-			const struct auxiliary_device_id *id)
+static int idpf_eth_probe(struct auxiliary_device *adev,
+			  const struct auxiliary_device_id *id)
 {
 	struct idpf_eth_idc_auxiliary_dev *eth_dev;
 	struct idpf_eth_adapter *adapter;
@@ -193,7 +250,7 @@ int idpf_eth_device_add(struct auxiliary_device *adev,
 	int err;
 
 	eth_dev = container_of(adev, struct idpf_eth_idc_auxiliary_dev, adev);
-	adapter = eth_dev->eth_info.eth_context;
+	adapter = dev_get_drvdata(&adev->dev);
 	dev = &adev->dev;
 	if (!adapter) {
 		adapter = idpf_eth_adapter_alloc(dev);
@@ -202,9 +259,17 @@ int idpf_eth_device_add(struct auxiliary_device *adev,
 
 		/* Initialize dev_info */
 		adapter->dev_info = &eth_dev->eth_info;
-		adapter->dev_info->eth_context = adapter;
 		adapter->req_tx_splitq = true;
 		adapter->req_rx_splitq = true;
+		dev_set_drvdata(&adev->dev, adapter);
+
+		/* Devlink register */
+		devl_register(priv_to_devlink(adapter));
+
+		/* Devlink port register */
+		devl_lock(priv_to_devlink(adapter));
+		idpf_eth_devlink_port_register(adapter);
+		devl_unlock(priv_to_devlink(adapter));
 
 		/* setup msglvl */
 		adapter->msg_enable = netif_msg_init(-1, IDPF_AVAIL_NETIF_M);
@@ -225,27 +290,44 @@ int idpf_eth_device_add(struct auxiliary_device *adev,
 
 /**
  * idpf_eth_remove - removes ethernet device
- * @adev: Structure related to ethernet device information
+ * @adev: Structure related to auxiliary ethernet device
  */
 static void idpf_eth_remove(struct auxiliary_device *adev)
 {
-	struct idpf_eth_idc_auxiliary_dev *dev_info;
 	struct idpf_eth_adapter *adapter;
+	struct idpf_eth_idc_event event;
 	struct net_device *netdev;
+	struct device *dev;
 
-	dev_info = container_of(adev, struct idpf_eth_idc_auxiliary_dev, adev);
-	adapter = dev_info->eth_info.eth_context;
+	adapter = dev_get_drvdata(&adev->dev);
 	if (!adapter)
 		return;
 
+	dev = idpf_adapter_to_adev_dev(adapter);
+	if (!test_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags)) {
+		/* Notify lower layer of asynchronous eth removal */
+		event.event_code = IDPF_ETH_IDC_EVENT_ETH_REMOVE_NOTIFY;
+		idpf_eth_idc(adapter).event_send(adapter->dev_info, &event);
+
+		set_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags);
+	}
+
+	idpf_eth_device_deinit(adapter);
+
+	/* Cancel any pending task(s) */
+	cancel_delayed_work_sync(&adapter->post_init_task);
+	cancel_delayed_work_sync(&adapter->stats_task);
+
 	if (adapter->netdev) {
+		SET_NETDEV_DEVLINK_PORT(netdev, NULL);
 		netdev = adapter->netdev;
-		if (netdev) {
-			if (netdev->reg_state != NETREG_UNINITIALIZED)
-				unregister_netdev(netdev);
-			free_netdev(netdev);
-			adapter->netdev = NULL;
-		}
+		if (netdev->reg_state != NETREG_UNINITIALIZED)
+			unregister_netdev(netdev);
+
+		mutex_lock(&adapter->vport_ctrl_lock);
+		free_netdev(netdev);
+		adapter->netdev = NULL;
+		mutex_unlock(&adapter->vport_ctrl_lock);
 	}
 
 	kfree(adapter->vport_config);
@@ -257,8 +339,33 @@ static void idpf_eth_remove(struct auxiliary_device *adev)
 	destroy_workqueue(adapter->stats_wq);
 	mutex_destroy(&adapter->vport_ctrl_lock);
 
-	dev_info->eth_info.eth_context = NULL;
-	kfree(adapter);
+	dev_err(dev, "Device removed");
+	dev_set_drvdata(&adev->dev, NULL);
+	devl_port_unregister(&adapter->devl_port);
+	devl_unregister(priv_to_devlink(adapter));
+	devlink_free(priv_to_devlink(adapter));
+}
+
+/**
+ * idpf_eth_shutdown - shutdown ethernet device
+ * @adev: Structure related to auxiliary ethernet device
+ */
+static void idpf_eth_shutdown(struct auxiliary_device *adev)
+{
+	struct idpf_eth_adapter *adapter;
+	struct idpf_eth_idc_event event;
+
+	adapter = dev_get_drvdata(&adev->dev);
+	if (!adapter)
+		return;
+
+	if (!test_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags)) {
+		/* Notify lower layer of asynchronous eth removal */
+		event.event_code = IDPF_ETH_IDC_EVENT_ETH_REMOVE_NOTIFY;
+		idpf_eth_idc(adapter).event_send(adapter->dev_info, &event);
+
+		set_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags);
+	}
 }
 
 /**
@@ -269,9 +376,12 @@ static void idpf_eth_remove(struct auxiliary_device *adev)
 static void idpf_eth_event_handler(struct idpf_eth_idc_dev_info *dev_info,
 				   struct idpf_eth_idc_event *event)
 {
+	struct idpf_eth_idc_auxiliary_dev *eth_dev;
 	struct idpf_eth_adapter *adapter;
 
-	adapter = dev_info->eth_context;
+	eth_dev = container_of(dev_info, struct idpf_eth_idc_auxiliary_dev,
+			       eth_info);
+	adapter = dev_get_drvdata(&eth_dev->adev.dev);
 	if (!adapter)
 		return;
 
@@ -303,17 +413,12 @@ static void idpf_eth_event_handler(struct idpf_eth_idc_dev_info *dev_info,
 			adev = container_of(eth_dev_info,
 					    struct idpf_eth_idc_auxiliary_dev,
 					    eth_info);
-			idpf_eth_device_add(&adev->adev, NULL);
+			idpf_eth_probe(&adev->adev, NULL);
 		}
 		break;
 
 	case IDPF_ETH_IDC_EVENT_LINK_CHANGE:
 		idpf_handle_event_link(adapter, event->event_data);
-		break;
-
-	case IDPF_ETH_IDC_EVENT_REMOVE:
-		set_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags);
-		idpf_eth_device_deinit(adapter);
 		break;
 
 	case IDPF_ETH_IDC_EVENT_POST_INIT:
@@ -323,31 +428,6 @@ static void idpf_eth_event_handler(struct idpf_eth_idc_dev_info *dev_info,
 	default:
 		break;
 	}
-}
-
-static struct idpf_eth_idc_auxiliary_driver idpf_eth_driver = {
-	.event_handler = idpf_eth_event_handler
-};
-
-/**
- * idpf_eth_get_driver - returns ethernet device driver structure
- * @void: void
- */
-struct idpf_eth_idc_auxiliary_driver *idpf_eth_get_driver(void)
-{
-	return &idpf_eth_driver;
-}
-
-/**
- * idpf_eth_unregister - unregister ethernet device
- * @adev: Ethernet auxiliary device
- */
-void idpf_eth_unregister(struct auxiliary_device *adev)
-{
-	if (!adev)
-		return;
-
-	idpf_eth_remove(adev);
 }
 
 /**
@@ -377,3 +457,29 @@ void idpf_eth_device_deinit(struct idpf_eth_adapter *adapter)
 	mutex_unlock(&adapter->vport_ctrl_lock);
 }
 
+static const struct auxiliary_device_id idpf_eth_id_table[] = {
+	{ .name = "idpf.eth", },
+	{ },
+};
+
+MODULE_DEVICE_TABLE(auxiliary, idpf_eth_id_table);
+
+static struct idpf_eth_idc_auxiliary_driver idpf_eth_driver = {
+	.adrv = {
+		.name = "eth",
+		.probe = idpf_eth_probe,
+		.remove = idpf_eth_remove,
+		.shutdown = idpf_eth_shutdown,
+		.id_table = idpf_eth_id_table
+	},
+	.event_handler = idpf_eth_event_handler
+};
+
+/**
+ * idpf_eth_get_driver - returns ethernet device driver structure
+ * @void: void
+ */
+struct idpf_eth_idc_auxiliary_driver *idpf_eth_get_driver(void)
+{
+	return &idpf_eth_driver;
+}

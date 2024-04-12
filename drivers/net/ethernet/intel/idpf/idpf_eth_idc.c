@@ -18,7 +18,8 @@ static void idpf_eth_idc_event_send(struct idpf_eth_idc_dev_info *dev_info,
 {
 	struct idpf_adapter *adapter;
 
-	adapter = idpf_dev_info_to_adapter(dev_info);
+	adapter = container_of(dev_info->eth_shared, struct idpf_adapter,
+			       eth_shared);
 	idpf_recv_eth_event(adapter, event);
 }
 
@@ -33,7 +34,8 @@ size_t idpf_eth_idc_virtchnl_send(struct idpf_eth_idc_dev_info *dev_info,
 {
 	struct idpf_adapter *adapter;
 
-	adapter = idpf_dev_info_to_adapter(dev_info);
+	adapter = container_of(dev_info->eth_shared, struct idpf_adapter,
+			       eth_shared);
 	return idpf_vc_xn_exec(adapter, params);
 }
 
@@ -51,7 +53,8 @@ static int idpf_eth_idc_intr_reg_init(struct idpf_eth_idc_dev_info *dev_info,
 {
 	struct idpf_adapter *adapter;
 
-	adapter = idpf_dev_info_to_adapter(dev_info);
+	adapter = container_of(dev_info->eth_shared, struct idpf_adapter,
+			       eth_shared);
 	return adapter->dev_ops.reg_ops.intr_reg_init(adapter, num_vecs,
 						      q_vectors, q_vector_idxs);
 }
@@ -71,7 +74,8 @@ int idpf_eth_idc_intr_init_vec_idx(struct idpf_eth_idc_dev_info *dev_info,
 {
 	struct idpf_adapter *adapter;
 
-	adapter = idpf_dev_info_to_adapter(dev_info);
+	adapter = container_of(dev_info->eth_shared, struct idpf_adapter,
+			       eth_shared);
 	return idpf_intr_init_vec_idx(adapter, num_vecs,
 				      q_vectors, q_vector_idxs);
 }
@@ -91,7 +95,8 @@ int idpf_eth_idc_req_rel_vector_indexes(struct idpf_eth_idc_dev_info *dev_info,
 {
 	struct idpf_adapter *adapter;
 
-	adapter = idpf_dev_info_to_adapter(dev_info);
+	adapter = container_of(dev_info->eth_shared, struct idpf_adapter,
+			       eth_shared);
 	return idpf_req_rel_vector_indexes(adapter, num_vectors, vec_info,
 					   msix_table);
 }
@@ -226,37 +231,42 @@ void idpf_eth_idc_deinit_shared(struct idpf_eth_shared *eth_shared)
 
 /**
  * idpf_eth_idc_device_free - function to be mapped to aux dev's release op
- * @eth_adev: pointer to device to free allocated memory
+ * @dev: pointer to device to free allocated memory
  */
 static
-void idpf_eth_idc_device_free(struct idpf_eth_idc_auxiliary_dev *eth_adev)
+void idpf_eth_idc_device_free(struct device *dev)
 {
-	struct idpf_adapter *adapter;
-	u16 idx;
+	struct idpf_eth_idc_auxiliary_dev *eth_adev;
 
-	adapter = (struct idpf_adapter *)eth_adev->eth_info.idpf_context;
+	eth_adev = container_of(dev, struct idpf_eth_idc_auxiliary_dev,
+				adev.dev);
 	ida_free(&idpf_eth_idc_ida, eth_adev->adev.id);
-	idx = eth_adev->eth_info.idx;
-	/* Release all max queues allocated to the pool */
-	idpf_dealloc_max_qs(adapter, &eth_adev->eth_info.caps.q_info);
-	kfree(adapter->adevs[idx]);
-	adapter->adevs[idx] = NULL;
+}
+
+/**
+ * idpf_eth_idc_driver_register - Register ethernet auxiliary driver
+ * @void: void
+ *
+ * Returns 0 on success, negative on failure
+ */
+int idpf_eth_idc_driver_register(void)
+{
+	struct idpf_eth_idc_auxiliary_driver *eth_idc_drv;
+
+	eth_idc_drv = idpf_eth_idc_get_driver();
+	return auxiliary_driver_register(&eth_idc_drv->adrv);
 }
 
 /**
  * idpf_eth_idc_driver_unregister - unregister ethernet driver
- * @adapter: Idpf private structure
+ * @void: void
  */
-void idpf_eth_idc_driver_unregister(struct idpf_adapter *adapter)
+void idpf_eth_idc_driver_unregister(void)
 {
-	u16 i;
+	struct idpf_eth_idc_auxiliary_driver *eth_idc_drv;
 
-	for (i = 0; i < adapter->default_vports; ++i) {
-		idpf_eth_unregister(&adapter->adevs[i]->adev);
-		idpf_eth_idc_device_free(adapter->adevs[i]);
-	}
-	kfree(adapter->adevs);
-	adapter->adevs = NULL;
+	eth_idc_drv = idpf_eth_idc_get_driver();
+	auxiliary_driver_unregister(&eth_idc_drv->adrv);
 }
 
 /**
@@ -326,10 +336,9 @@ idpf_eth_idc_device_alloc(struct idpf_adapter *adapter,
 
 	new_eth_dev->adev.id = ida_alloc(&idpf_eth_idc_ida, GFP_KERNEL);
 	new_eth_dev->eth_info.eth_shared = &adapter->eth_shared;
-	new_eth_dev->eth_info.idpf_context = (void *)adapter;
-	new_eth_dev->eth_info.eth_context = NULL;
 	new_eth_dev->eth_info.idx = index;
 	new_eth_dev->adev.name = "eth";
+	new_eth_dev->adev.dev.release = idpf_eth_idc_device_free;
 	new_eth_dev->adev.dev.parent = &adapter->pdev->dev;
 
 	/* Set vport type */
@@ -357,6 +366,8 @@ alloc_exit:
 void idpf_eth_idc_device_init(struct idpf_adapter *adapter)
 {
 	struct idpf_eth_idc_auxiliary_dev *eth_dev;
+	struct device *dev = &adapter->pdev->dev;
+	int err;
 	u16 i;
 
 	/* Check if device is already initialized */
@@ -380,7 +391,43 @@ void idpf_eth_idc_device_init(struct idpf_adapter *adapter)
 		/* Initialize ethernet parameter(s) */
 		idpf_eth_idc_init_device_params(adapter, eth_dev);
 
-		/* Direct eth device add */
-		idpf_eth_device_add(&eth_dev->adev, NULL);
+		err = auxiliary_device_init(&eth_dev->adev);
+		if (err) {
+			dev_err(dev, "Auxiliary dev ID 0x%x init failed 0x%x\n",
+				i, err);
+		} else {
+			err = auxiliary_device_add(&eth_dev->adev);
+			if (err)
+				continue;
+		}
 	}
+}
+
+/**
+ * idpf_eth_idc_device_deinit - Deinitialize ethernet IDC
+ * @adapter: Idpf private structure
+ */
+void idpf_eth_idc_device_deinit(struct idpf_adapter *adapter)
+{
+	u16 i;
+
+	if (!adapter->adevs)
+		return;
+
+	for (i = 0; i < adapter->default_vports; ++i) {
+		struct idpf_eth_idc_auxiliary_dev *eth_adev;
+
+		eth_adev = adapter->adevs[i];
+		auxiliary_device_delete(&eth_adev->adev);
+		auxiliary_device_uninit(&eth_adev->adev);
+
+		/* Release all max queues allocated to the pool */
+		idpf_dealloc_max_qs(adapter, &eth_adev->eth_info.caps.q_info);
+
+		kfree(adapter->adevs[i]);
+		adapter->adevs[i] = NULL;
+	}
+
+	kfree(adapter->adevs);
+	adapter->adevs = NULL;
 }

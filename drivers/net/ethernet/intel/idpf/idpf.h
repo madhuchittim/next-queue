@@ -13,6 +13,7 @@
 #include <linux/ethtool_netlink.h>
 #include <net/gro.h>
 #include <linux/dim.h>
+#include <net/devlink.h>
 
 #include "virtchnl2.h"
 #include "idpf_controlq.h"
@@ -80,6 +81,7 @@ enum idpf_flags {
 	IDPF_MB_INTR_MODE,
 	IDPF_VC_CORE_INIT,
 	IDPF_FLAGS_NBITS,
+	IDPF_VC_XN_DOWN,
 };
 
 /**
@@ -371,6 +373,8 @@ int idpf_eth_idc_init_shared(struct idpf_eth_shared *eth_shared);
 void idpf_eth_idc_deinit_shared(struct idpf_eth_shared *eth_shared);
 
 void idpf_eth_idc_device_init(struct idpf_adapter *adapter);
-void idpf_eth_idc_driver_unregister(struct idpf_adapter *adapter);
+void idpf_eth_idc_driver_unregister(void);
+void idpf_eth_idc_device_deinit(struct idpf_adapter *adapter);
+int idpf_eth_idc_driver_register(void);
 
 #endif /* !_IDPF_H_ */

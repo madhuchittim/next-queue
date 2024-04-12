@@ -32,7 +32,7 @@ void idpf_handle_event_link(struct idpf_eth_adapter *adapter,
 	struct idpf_vport *vport;
 	struct device *dev;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	vport = adapter->vport;
 	if (!vport) {
 		dev_err_ratelimited(dev, "Failed to find vport_id %d for link event\n",
@@ -356,7 +356,7 @@ int idpf_vport_alloc_vec_indexes(struct idpf_vport *vport)
 	struct device *dev;
 	int num_alloc_vecs;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	vec_info.num_curr_vecs = vport->num_q_vectors;
 	vec_info.num_req_vecs = max(vport->num_txq, vport->num_rxq);
 	vec_info.default_vport = vport->default_vport;
@@ -728,7 +728,7 @@ int idpf_vport_open(struct idpf_vport *vport, bool alloc_res)
 	struct device *dev;
 	int err;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	if (np->state != __IDPF_VPORT_DOWN)
 		return -EBUSY;
 
@@ -874,7 +874,7 @@ int idpf_initiate_soft_reset(struct idpf_vport *vport,
 	struct device *dev;
 	int err, i;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	/* If the system is low on memory, we can end up in bad state if we
 	 * free all the memory for queue resources and try to allocate them
 	 * again. Instead, we can pre-allocate the new resources before doing

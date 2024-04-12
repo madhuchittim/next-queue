@@ -41,8 +41,8 @@ static int idpf_tx_desc_alloc_all(struct idpf_vport *vport)
 	int err = 0;
 	int i, j;
 
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
 	/* Setup buffer queues. In single queue model buffer queues and
 	 * completion queues will be same
 	 */
@@ -205,7 +205,7 @@ static int idpf_rx_desc_alloc_all(struct idpf_vport *vport)
 	int i, j, err;
 	u16 num_rxq;
 
-	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	dev = idpf_adapter_to_adev_dev(vport->adapter);
 	for (i = 0; i < vport->num_rxq_grp; i++) {
 		rx_qgrp = &vport->rxq_grps[i];
 		if (idpf_is_queue_model_split(vport->rxq_model))
@@ -1292,7 +1292,7 @@ int idpf_vport_intr_init(struct idpf_vport *vport)
 	char *int_name;
 	int err;
 
-	dev = idpf_adapter_to_pdev_dev(adapter);
+	dev = idpf_adapter_to_adev_dev(adapter);
 	err = idpf_eth_idc(adapter).intr_init_vec_idx(adapter->dev_info,
 						      vport->num_q_vectors,
 						      vport->q_vectors,
