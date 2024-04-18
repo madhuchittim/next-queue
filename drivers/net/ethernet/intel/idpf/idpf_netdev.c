@@ -30,29 +30,13 @@ void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue)
  * idpf_netdev_stop - Stop traffic from getting queued up
  * @netdev: stack net device
  */
-static void idpf_netdev_stop(struct net_device *netdev)
+void idpf_netdev_stop(struct net_device *netdev)
 {
 	if (!netdev)
 		return;
 
 	netif_carrier_off(netdev);
 	netif_tx_disable(netdev);
-}
-
-/**
- * idpf_netdev_stop_all - Stop all traffic on all netdevs
- * @adapter: Ethernet adapter struct
- */
-void idpf_netdev_stop_all(struct idpf_eth_adapter *adapter)
-{
-	int default_vports = adapter->dev_info->default_vports;
-	int i;
-
-	for (i = 0; i < default_vports; i++) {
-		if (!adapter->netdevs[i])
-			continue;
-		idpf_netdev_stop(adapter->netdevs[i]);
-	}
 }
 
 /**
@@ -76,13 +60,13 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 
 	dev = idpf_adapter_to_pdev_dev(adapter);
 	caps = idpf_eth_caps(adapter);
-	vport_config = adapter->vport_config[idx];
+	vport_config = adapter->vport_config;
 
 	/* It's possible we already have a netdev allocated and registered for
 	 * this vport
 	 */
 	if (test_bit(IDPF_VPORT_REG_NETDEV, vport_config->flags)) {
-		netdev = adapter->netdevs[idx];
+		netdev = adapter->netdev;
 		np = netdev_priv(netdev);
 		np->vport = vport;
 		np->vport_idx = vport->idx;
@@ -197,7 +181,7 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 	/* The vport can be arbitrarily released so we need to also track
 	 * netdevs in the adapter struct
 	 */
-	adapter->netdevs[idx] = netdev;
+	adapter->netdev = netdev;
 	return 0;
 }
 
@@ -242,16 +226,14 @@ void idpf_decfg_netdev(struct idpf_vport *vport)
 	struct idpf_eth_adapter *adapter = vport->adapter;
 
 	/* Check first if netdev is registered earlier */
-	if (test_bit(IDPF_VPORT_REG_NETDEV,
-		     adapter->vport_config[vport->idx]->flags)) {
+	if (test_bit(IDPF_VPORT_REG_NETDEV, adapter->vport_config->flags)) {
 		unregister_netdev(vport->netdev);
-		clear_bit(IDPF_VPORT_REG_NETDEV,
-			  adapter->vport_config[vport->idx]->flags);
+		clear_bit(IDPF_VPORT_REG_NETDEV, adapter->vport_config->flags);
 	}
 
 	free_netdev(vport->netdev);
 	vport->netdev = NULL;
-	adapter->netdevs[vport->idx] = NULL;
+	adapter->netdev = NULL;
 }
 
 /**
@@ -350,7 +332,7 @@ static void idpf_set_rx_mode(struct net_device *netdev)
 			     VIRTCHNL2_CAP_PROMISC))
 		return;
 
-	config_data = &adapter->vport_config[np->vport_idx]->user_config;
+	config_data = &adapter->vport_config->user_config;
 	/* IFF_PROMISC enables both unicast and multicast promiscuous,
 	 * while IFF_ALLMULTI only enables multicast such that:
 	 *
@@ -611,7 +593,7 @@ static int idpf_set_mac(struct net_device *netdev, void *p)
 	if (ether_addr_equal(netdev->dev_addr, addr->sa_data))
 		goto unlock_mutex;
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	vport_config = vport->adapter->vport_config;
 	err = idpf_add_mac_filter(vport, np, addr->sa_data, false);
 	if (err) {
 		__idpf_del_mac_filter(vport_config, addr->sa_data);

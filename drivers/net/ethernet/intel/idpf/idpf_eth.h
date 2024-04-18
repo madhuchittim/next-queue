@@ -38,8 +38,6 @@ enum idpf_eth_flags {
 
 /**
  * struct idpf_eth_adapter - ethernet device data struct generated on probe
- * @pre_init_task: Pre initialization task
- * @pre_init_wq: Workqueue for pre initialization task
  * @post_init_task: Ethernet probe's post init task
  * @post_init_wq: post init work queue
  * @flags: See enum idpf_eth_flags
@@ -59,21 +57,20 @@ enum idpf_eth_flags {
  * @next_vport: Next free slot in pf->vport[] - 0-based!
  * @num_alloc_vports: Vport allocated count
  * @msg_enable: Debug message level enabled
+ * @start_post_init: Starts probe post initialization 
  */
 struct idpf_eth_adapter {
-	struct delayed_work pre_init_task;
-	struct workqueue_struct *pre_init_wq;
 	struct delayed_work post_init_task;
 	struct workqueue_struct *post_init_wq;
 	DECLARE_BITMAP(flags, IDPF_ETH_FLAGS_NBITS);
 	struct idpf_eth_idc_dev_info *dev_info;
 	struct delayed_work stats_task;
 	struct workqueue_struct *stats_wq;
-	struct idpf_vport **vports;
-	struct net_device **netdevs;
-	struct virtchnl2_create_vport **vport_params_reqd;
-	struct virtchnl2_create_vport **vport_params_recvd;
-	struct idpf_vport_config **vport_config;
+	struct idpf_vport *vport;
+	struct net_device *netdev;
+	struct virtchnl2_create_vport *vport_params_reqd;
+	struct virtchnl2_create_vport *vport_params_recvd;
+	struct idpf_vport_config *vport_config;
 	struct mutex vport_ctrl_lock;
 	u32 tx_timeout_count;
 	bool req_tx_splitq;
@@ -82,6 +79,7 @@ struct idpf_eth_adapter {
 	u16 next_vport;
 	u16 num_alloc_vports;
 	u32 msg_enable;
+	bool start_post_init;
 };
 
 #define idpf_eth_adapter_shared(eth_adapter) \
@@ -90,6 +88,8 @@ struct idpf_eth_adapter {
 	((idpf_eth_adapter_shared(eth_adapter))->eth_idc_ops)
 #define idpf_eth_caps(adapter) \
 	(&((adapter)->dev_info->caps))
+#define idpf_user_config(adapter) \
+	(&(((adapter)->vport_config)->user_config))
 
 /**
  * idpf_adapter_to_pdev_dev - Get device structure

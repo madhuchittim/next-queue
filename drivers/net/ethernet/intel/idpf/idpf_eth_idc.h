@@ -13,6 +13,7 @@ enum idpf_eth_idc_event_code {
 	IDPF_ETH_IDC_EVENT_RESET_INITIATED,
 	IDPF_ETH_IDC_EVENT_RESET_COMPLETE,
 	IDPF_ETH_IDC_EVENT_REMOVE,
+	IDPF_ETH_IDC_EVENT_POST_INIT,
 
 	/* Following requests are from auxiliary eth driver to main driver */
 	IDPF_ETH_IDC_EVENT_REQ_HARD_RESET,
@@ -45,7 +46,7 @@ struct idpf_eth_idc_auxiliary_dev_caps {
 	__le16 max_tx_hdr_size;
 	u8 max_sg_bufs_per_tx_pkt;
 	u8 min_sso_packet_len;
-	struct idpf_max_q *q_info;
+	struct idpf_max_q q_info;
 	bool crc_enable;
 };
 
@@ -103,6 +104,7 @@ struct idpf_eth_shared {
  * @eth_context: Ethernet driver's context
  * @vport_type: Vport type
  * @caps: Auxiliary device capabilities
+ * @vport_id: Vport ID of device
  * @idx: Index number of auxiliary device
  */
 struct idpf_eth_idc_dev_info {
@@ -111,7 +113,7 @@ struct idpf_eth_idc_dev_info {
 	void *eth_context;
 	enum idpf_vport_type vport_type;
 	struct idpf_eth_idc_auxiliary_dev_caps caps;
-	u32 default_vports;
+	u32 vport_id;
 	u16 idx;
 };
 

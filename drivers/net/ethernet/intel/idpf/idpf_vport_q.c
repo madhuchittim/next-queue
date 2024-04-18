@@ -378,9 +378,8 @@ void idpf_vport_init_num_qs(struct idpf_vport *vport,
 			    struct virtchnl2_create_vport *vport_msg)
 {
 	struct idpf_vport_user_config_data *config_data;
-	u16 idx = vport->idx;
 
-	config_data = &vport->adapter->vport_config[idx]->user_config;
+	config_data = idpf_user_config(vport->adapter);
 	vport->num_txq = le16_to_cpu(vport_msg->num_tx_q);
 	vport->num_rxq = le16_to_cpu(vport_msg->num_rx_q);
 	/* number of txqs and rxqs in config data will be zeros only in the
@@ -421,10 +420,9 @@ void idpf_vport_calc_num_q_desc(struct idpf_vport *vport)
 	struct idpf_vport_user_config_data *config_data;
 	int num_bufqs = vport->num_bufqs_per_qgrp;
 	u32 num_req_txq_desc, num_req_rxq_desc;
-	u16 idx = vport->idx;
 	int i;
 
-	config_data =  &vport->adapter->vport_config[idx]->user_config;
+	config_data =  idpf_user_config(vport->adapter);
 	num_req_txq_desc = config_data->num_req_txq_desc;
 	num_req_rxq_desc = config_data->num_req_rxq_desc;
 
@@ -477,7 +475,7 @@ int idpf_vport_calc_total_qs(struct idpf_eth_adapter *adapter, u16 vport_idx,
 	u16 num_txq_grps, num_rxq_grps;
 	u32 num_qs;
 
-	vport_config = adapter->vport_config[vport_idx];
+	vport_config = adapter->vport_config;
 	if (vport_config) {
 		num_req_tx_qs = vport_config->user_config.num_req_tx_qs;
 		num_req_rx_qs = vport_config->user_config.num_req_rx_qs;
@@ -1360,7 +1358,7 @@ static void idpf_fill_dflt_rss_lut(struct idpf_vport *vport)
 	struct idpf_rss_data *rss_data;
 	int i;
 
-	rss_data = &adapter->vport_config[vport->idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config->user_config.rss_data;
 
 	for (i = 0; i < rss_data->rss_lut_size; i++) {
 		rss_data->rss_lut[i] = i % num_active_rxq;
@@ -1380,7 +1378,7 @@ int idpf_init_rss(struct idpf_vport *vport)
 	struct idpf_rss_data *rss_data;
 	u32 lut_size;
 
-	rss_data = &adapter->vport_config[vport->idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config->user_config.rss_data;
 
 	lut_size = rss_data->rss_lut_size * sizeof(u32);
 	rss_data->rss_lut = kzalloc(lut_size, GFP_KERNEL);
@@ -1410,7 +1408,7 @@ void idpf_deinit_rss(struct idpf_vport *vport)
 	struct idpf_eth_adapter *adapter = vport->adapter;
 	struct idpf_rss_data *rss_data;
 
-	rss_data = &adapter->vport_config[vport->idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config->user_config.rss_data;
 	kfree(rss_data->cached_lut);
 	rss_data->cached_lut = NULL;
 	kfree(rss_data->rss_lut);

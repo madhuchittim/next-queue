@@ -107,6 +107,31 @@ static struct idpf_eth_idc_auxiliary_driver *idpf_eth_idc_get_driver(void)
 }
 
 /**
+ * idpf_eth_idc_vid_to_dev_info - Translate v_id to eth dev_info
+ * @adapter: Idpf private structure
+ * @v_id: vport id to translate
+ *
+ * Returns dev_info matching v_id, NULL if not found.
+ */
+static struct idpf_eth_idc_dev_info *
+idpf_eth_idc_vid_to_dev_info(struct idpf_adapter *adapter,
+			     u32 v_id)
+{
+	struct idpf_eth_idc_dev_info *eth_info;
+	int i;
+
+	for (i = 0; i < adapter->default_vports; ++i) {
+		if (!adapter->adevs[i])
+			continue;
+		eth_info = &adapter->adevs[i]->eth_info;
+		if (v_id == eth_info->vport_id)
+			return eth_info;
+	}
+
+	return NULL;
+}
+
+/**
  * idpf_eth_idc_dispatch_event - Called by Main Driver to send event
  * @adapter: Idpf adapter private structure
  * @event_type: Event type for all or single ports
@@ -121,26 +146,37 @@ void idpf_eth_idc_dispatch_event(struct idpf_adapter *adapter,
 	struct idpf_eth_idc_auxiliary_driver *eth_idc_drv;
 	struct idpf_eth_idc_dev_info *eth_info;
 	struct idpf_eth_idc_event event;
+	struct virtchnl2_event *v2e;
+	u32 vport_id;
+	int i;
 
-	if (!adapter->adevs || !adapter->adevs[0])
+	if (!adapter->adevs)
 		return;
 
 	event.event_code = event_code;
 	event.event_data = event_data;
 	eth_idc_drv = idpf_eth_idc_get_driver();
-	eth_info = &adapter->adevs[0]->eth_info;
-	if (!eth_info)
-		return;
-
 	switch (event_type) {
 	case IDPF_ETH_IDC_EVENT_ALL_VPORTS:
-		eth_idc_drv->event_handler(eth_info, &event);
+		for (i = 0; i < adapter->default_vports; ++i) {
+			if (!adapter->adevs[i])
+				continue;
+
+			eth_info = &adapter->adevs[i]->eth_info;
+			eth_idc_drv->event_handler(eth_info, &event);
+		}
 		break;
 
 	case IDPF_ETH_IDC_EVENT_SINGLE_VPORT:
 		switch (event.event_code) {
 		case IDPF_ETH_IDC_EVENT_LINK_CHANGE:
-			eth_idc_drv->event_handler(eth_info, &event);
+			v2e = (struct virtchnl2_event *)event.event_data;
+			/* vport_id indexes the dev_info instance */
+			vport_id = le32_to_cpu(v2e->vport_id);
+			eth_info =  idpf_eth_idc_vid_to_dev_info(adapter,
+								 vport_id);
+			if (eth_info)
+				eth_idc_drv->event_handler(eth_info, &event);
 			break;
 
 		default:
@@ -196,17 +232,13 @@ static
 void idpf_eth_idc_device_free(struct idpf_eth_idc_auxiliary_dev *eth_adev)
 {
 	struct idpf_adapter *adapter;
-	u16 idx, i;
+	u16 idx;
 
 	adapter = (struct idpf_adapter *)eth_adev->eth_info.idpf_context;
 	ida_free(&idpf_eth_idc_ida, eth_adev->adev.id);
 	idx = eth_adev->eth_info.idx;
-
 	/* Release all max queues allocated to the pool */
-	for (i = 0; i < adapter->default_vports; i++)
-		idpf_dealloc_max_qs(adapter,
-				    &eth_adev->eth_info.caps.q_info[i]);
-
+	idpf_dealloc_max_qs(adapter, &eth_adev->eth_info.caps.q_info);
 	kfree(adapter->adevs[idx]);
 	adapter->adevs[idx] = NULL;
 }
@@ -217,8 +249,12 @@ void idpf_eth_idc_device_free(struct idpf_eth_idc_auxiliary_dev *eth_adev)
  */
 void idpf_eth_idc_driver_unregister(struct idpf_adapter *adapter)
 {
-	idpf_eth_unregister(&adapter->adevs[0]->adev);
-	idpf_eth_idc_device_free(adapter->adevs[0]);
+	u16 i;
+
+	for (i = 0; i < adapter->default_vports; ++i) {
+		idpf_eth_unregister(&adapter->adevs[i]->adev);
+		idpf_eth_idc_device_free(adapter->adevs[i]);
+	}
 	kfree(adapter->adevs);
 	adapter->adevs = NULL;
 }
@@ -232,23 +268,18 @@ static void
 idpf_eth_idc_init_device_params(struct idpf_adapter *adapter,
 				struct idpf_eth_idc_auxiliary_dev *eth_dev)
 {
-	u16 i;
-
 	/* crc info */
 	eth_dev->eth_info.caps.crc_enable = adapter->crc_enable;
-	eth_dev->eth_info.default_vports = adapter->default_vports;
 
 	/* Queue Info */
-	for (i = 0; i < adapter->default_vports; i++) {
-		eth_dev->eth_info.caps.q_info[i].max_rxq =
-			le16_to_cpu(adapter->caps.max_rx_q);
-		eth_dev->eth_info.caps.q_info[i].max_txq =
-			le16_to_cpu(adapter->caps.max_tx_q);
-		eth_dev->eth_info.caps.q_info[i].max_bufq =
-			le16_to_cpu(adapter->caps.max_rx_bufq);
-		eth_dev->eth_info.caps.q_info[i].max_complq =
-			le16_to_cpu(adapter->caps.max_tx_complq);
-	}
+	eth_dev->eth_info.caps.q_info.max_rxq =
+		le16_to_cpu(adapter->caps.max_rx_q);
+	eth_dev->eth_info.caps.q_info.max_txq =
+		le16_to_cpu(adapter->caps.max_tx_q);
+	eth_dev->eth_info.caps.q_info.max_bufq =
+		le16_to_cpu(adapter->caps.max_rx_bufq);
+	eth_dev->eth_info.caps.q_info.max_complq =
+		le16_to_cpu(adapter->caps.max_tx_complq);
 
 	/* Caps */
 	eth_dev->eth_info.caps.csum_caps = adapter->caps.csum_caps;
@@ -267,64 +298,53 @@ idpf_eth_idc_init_device_params(struct idpf_adapter *adapter,
 /**
  * idpf_eth_idc_device_alloc - allocate auxiliary device
  * @adapter: Idpf private structure
+ * @index: adev index
  * @vport_type: Vport type
  *
  * Returns allocated structure
  */
 static struct idpf_eth_idc_auxiliary_dev *
 idpf_eth_idc_device_alloc(struct idpf_adapter *adapter,
+			  u16 index,
 			  enum idpf_vport_type vport_type)
 {
 	struct idpf_eth_idc_auxiliary_dev *new_eth_dev;
 	struct idpf_eth_idc_dev_info *dev_info;
-	struct idpf_max_q *q_info;
-	u16 i, j;
-	int err;
+	u16 err;
 
-	if (!adapter->adevs[0]) {
-		adapter->adevs[0] =
+	if (index >= adapter->default_vports)
+		return NULL;
+
+	if (!adapter->adevs[index])
+		adapter->adevs[index] =
 			kzalloc(sizeof(struct idpf_eth_idc_auxiliary_dev),
 				GFP_KERNEL);
-		new_eth_dev = adapter->adevs[0];
-		if (!new_eth_dev)
-			goto alloc_exit;
 
-		new_eth_dev->eth_info.caps.q_info =
-			kzalloc((adapter->max_vports *
-				 sizeof(struct idpf_max_q)), GFP_KERNEL);
-		if (!new_eth_dev->eth_info.caps.q_info) {
-			kfree(adapter->adevs[0]);
-			goto alloc_exit;
-		}
+	new_eth_dev = adapter->adevs[index];
+	if (!new_eth_dev)
+		goto alloc_exit;
 
-		new_eth_dev->adev.id = ida_alloc(&idpf_eth_idc_ida, GFP_KERNEL);
-		new_eth_dev->eth_info.eth_shared = &adapter->eth_shared;
-		new_eth_dev->eth_info.idpf_context = (void *)adapter;
-		new_eth_dev->eth_info.eth_context = NULL;
-		new_eth_dev->eth_info.idx = 0;
-		/* Set vport type */
-		new_eth_dev->eth_info.vport_type = vport_type;
+	new_eth_dev->adev.id = ida_alloc(&idpf_eth_idc_ida, GFP_KERNEL);
+	new_eth_dev->eth_info.eth_shared = &adapter->eth_shared;
+	new_eth_dev->eth_info.idpf_context = (void *)adapter;
+	new_eth_dev->eth_info.eth_context = NULL;
+	new_eth_dev->eth_info.idx = index;
+	new_eth_dev->adev.name = "eth";
+	new_eth_dev->adev.dev.parent = &adapter->pdev->dev;
 
-		dev_info = &new_eth_dev->eth_info;
-		/* Allocate queue(s) */
-		for (i = 0; i < adapter->default_vports; i++) {
-			q_info = &dev_info->caps.q_info[i];
-			err = idpf_alloc_max_qs(adapter, q_info, vport_type);
-			if (!err)
-				continue;
+	/* Set vport type */
+	new_eth_dev->eth_info.vport_type = vport_type;
 
-			/* free resources */
-			for (j = 0; j < i; j++) {
-				q_info = &dev_info->caps.q_info[j];
-				idpf_dealloc_max_qs(adapter, q_info);
-			}
-			kfree(adapter->adevs[0]);
-			adapter->adevs[0] = NULL;
-			new_eth_dev = NULL;
-		}
-
-		return new_eth_dev;
+	dev_info = &new_eth_dev->eth_info;
+	err = idpf_alloc_max_qs(adapter, &dev_info->caps.q_info,
+				vport_type);
+	if (err) {
+		kfree(adapter->adevs[index]);
+		adapter->adevs[index] = NULL;
+		new_eth_dev = NULL;
 	}
+
+	return new_eth_dev;
 
 alloc_exit:
 	return NULL;
@@ -337,24 +357,30 @@ alloc_exit:
 void idpf_eth_idc_device_init(struct idpf_adapter *adapter)
 {
 	struct idpf_eth_idc_auxiliary_dev *eth_dev;
+	u16 i;
+
+	/* Check if device is already initialized */
+	if (adapter->adevs)
+		return;
 
 	/* This is the case of initial probe */
 	adapter->adevs =
-		kzalloc(sizeof(struct idpf_eth_idc_auxiliary_dev *),
+		kzalloc((adapter->max_vports *
+			 sizeof(struct idpf_eth_idc_auxiliary_dev *)),
 			GFP_KERNEL);
 	if (!adapter->adevs)
 		return;
 
-	eth_dev = idpf_eth_idc_device_alloc(adapter, IDPF_DEFAULT_VPORT);
-	if (!eth_dev)
-		return;
+	for (i = 0; i < adapter->default_vports; ++i) {
+		eth_dev = idpf_eth_idc_device_alloc(adapter, i,
+						    IDPF_DEFAULT_VPORT);
+		if (!eth_dev)
+			return;
 
-	eth_dev->adev.name = "eth";
-	eth_dev->adev.dev.parent = &adapter->pdev->dev;
+		/* Initialize ethernet parameter(s) */
+		idpf_eth_idc_init_device_params(adapter, eth_dev);
 
-	/* Initialize ethernet parameter(s) */
-	idpf_eth_idc_init_device_params(adapter, eth_dev);
-
-	/* Direct eth device add */
-	idpf_eth_device_add(&adapter->adevs[0]->adev, NULL);
+		/* Direct eth device add */
+		idpf_eth_device_add(&eth_dev->adev, NULL);
+	}
 }

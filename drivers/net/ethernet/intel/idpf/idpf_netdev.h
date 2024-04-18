@@ -76,7 +76,7 @@ void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue);
 
 int idpf_cfg_netdev(struct idpf_vport *vport);
 void idpf_decfg_netdev(struct idpf_vport *vport);
-void idpf_netdev_stop_all(struct idpf_eth_adapter *adapter);
+void idpf_netdev_stop(struct net_device *netdev);
 void idpf_set_ethtool_ops(struct net_device *netdev);
 
 #endif /* _IDPF_NETDEV_H_ */

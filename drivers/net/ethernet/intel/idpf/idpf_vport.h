@@ -325,8 +325,6 @@ int idpf_initiate_soft_reset(struct idpf_vport *vport,
 			     enum idpf_vport_reset_cause reset_cause);
 void idpf_handle_event_link(struct idpf_eth_adapter *adapter,
 			     const struct virtchnl2_event *v2e);
-struct idpf_vport *idpf_vid_to_vport(struct idpf_eth_adapter *adapter,
-				     u32 v_id);
 int idpf_vport_adjust_qs(struct idpf_vport *vport);
 int idpf_send_delete_queues_msg(struct idpf_vport *vport);
 int idpf_send_enable_queues_msg(struct idpf_vport *vport);

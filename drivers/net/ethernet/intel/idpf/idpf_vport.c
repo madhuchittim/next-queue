@@ -15,27 +15,9 @@ u32 idpf_get_vport_id(struct idpf_vport *vport)
 {
 	struct virtchnl2_create_vport *vport_msg;
 
-	vport_msg = vport->adapter->vport_params_recvd[vport->idx];
+	vport_msg = vport->adapter->vport_params_recvd;
 
 	return le32_to_cpu(vport_msg->vport_id);
-}
-
-/**
- * idpf_vid_to_vport - Translate vport id to vport pointer
- * @adapter: private data struct
- * @v_id: vport id to translate
- *
- * Returns vport matching v_id, NULL if not found.
- */
-struct idpf_vport *idpf_vid_to_vport(struct idpf_eth_adapter *adapter, u32 v_id)
-{
-	int i;
-
-	for (i = 0; i < adapter->dev_info->default_vports; i++)
-		if (adapter->vport_ids[i] == v_id)
-			return adapter->vports[i];
-
-	return NULL;
 }
 
 /**
@@ -49,9 +31,9 @@ void idpf_handle_event_link(struct idpf_eth_adapter *adapter,
 	struct idpf_netdev_priv *np;
 	struct idpf_vport *vport;
 	struct device *dev;
- 
+
 	dev = idpf_adapter_to_pdev_dev(adapter);
-	vport = idpf_vid_to_vport(adapter, le32_to_cpu(v2e->vport_id));
+	vport = adapter->vport;
 	if (!vport) {
 		dev_err_ratelimited(dev, "Failed to find vport_id %d for link event\n",
 				    v2e->vport_id);
@@ -76,22 +58,6 @@ void idpf_handle_event_link(struct idpf_eth_adapter *adapter,
 		netif_tx_stop_all_queues(vport->netdev);
 		netif_carrier_off(vport->netdev);
 	}
-}
-
-/**
- * idpf_get_free_slot - get the next non-NULL location index in array
- * @adapter: adapter in which to look for a free vport slot
- */
-static int idpf_get_free_slot(struct idpf_eth_adapter *adapter)
-{
-	unsigned int i;
-
-	for (i = 0; i < adapter->dev_info->default_vports; i++) {
-		if (!adapter->vports[i])
-			return i;
-	}
-
-	return IDPF_NO_FREE_SLOT;
 }
 
 /**
@@ -153,9 +119,8 @@ void idpf_vport_rel(struct idpf_vport *vport)
 	struct idpf_vport_config *vport_config;
 	struct idpf_vector_info vec_info;
 	struct idpf_rss_data *rss_data;
-	u16 idx = vport->idx;
 
-	vport_config = adapter->vport_config[vport->idx];
+	vport_config = adapter->vport_config;
 	idpf_deinit_rss(vport);
 	rss_data = &vport_config->user_config.rss_data;
 	kfree(rss_data->rss_key);
@@ -176,18 +141,17 @@ void idpf_vport_rel(struct idpf_vport *vport)
 	kfree(vport->q_vector_idxs);
 	vport->q_vector_idxs = NULL;
 
-	kfree(adapter->vport_params_recvd[idx]);
-	adapter->vport_params_recvd[idx] = NULL;
-	kfree(adapter->vport_params_reqd[idx]);
-	adapter->vport_params_reqd[idx] = NULL;
-	if (adapter->vport_config[idx]) {
-		kfree(adapter->vport_config[idx]->req_qs_chunks);
-		adapter->vport_config[idx]->req_qs_chunks = NULL;
+	kfree(adapter->vport_params_recvd);
+	adapter->vport_params_recvd = NULL;
+	kfree(adapter->vport_params_reqd);
+	adapter->vport_params_reqd = NULL;
+	if (adapter->vport_config) {
+		kfree(adapter->vport_config->req_qs_chunks);
+		adapter->vport_config->req_qs_chunks = NULL;
 	}
 	kfree(vport->msix_table);
 	vport->msix_table = NULL;
 	kfree(vport);
-	adapter->num_alloc_vports--;
 }
 
 /**
@@ -200,7 +164,6 @@ void idpf_vport_rel(struct idpf_vport *vport)
 void idpf_vport_dealloc(struct idpf_vport *vport, bool is_lock_acquired)
 {
 	struct idpf_eth_adapter *adapter = vport->adapter;
-	unsigned int i = vport->idx;
 
 	idpf_deinit_mac_addr(vport);
 
@@ -220,16 +183,14 @@ void idpf_vport_dealloc(struct idpf_vport *vport, bool is_lock_acquired)
 	if (test_bit(IDPF_ETH_REMOVE_IN_PROG, adapter->flags))
 		idpf_del_all_mac_filters(vport);
 
-	if (adapter->netdevs[i]) {
-		struct idpf_netdev_priv *np = netdev_priv(adapter->netdevs[i]);
+	if (adapter->netdev) {
+		struct idpf_netdev_priv *np = netdev_priv(adapter->netdev);
 
 		np->vport = NULL;
 	}
 
 	idpf_vport_rel(vport);
-
-	adapter->vports[i] = NULL;
-	adapter->next_vport = idpf_get_free_slot(adapter);
+	adapter->vport = NULL;
 }
 
 /**
@@ -263,7 +224,7 @@ u8 idpf_vport_get_hsplit(const struct idpf_vport *vport)
 	if (!idpf_is_hsplit_supported(vport))
 		return ETHTOOL_TCP_DATA_SPLIT_UNKNOWN;
 
-	config = &vport->adapter->vport_config[vport->idx]->user_config;
+	config = idpf_user_config(vport->adapter);
 
 	return test_bit(__IDPF_USER_FLAG_HSPLIT, config->user_flags) ?
 	       ETHTOOL_TCP_DATA_SPLIT_ENABLED :
@@ -284,7 +245,7 @@ bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val)
 	if (!idpf_is_hsplit_supported(vport))
 		return val == ETHTOOL_TCP_DATA_SPLIT_UNKNOWN;
 
-	config = &vport->adapter->vport_config[vport->idx]->user_config;
+	config = idpf_user_config(vport->adapter);
 
 	switch (val) {
 	case ETHTOOL_TCP_DATA_SPLIT_UNKNOWN:
@@ -311,37 +272,29 @@ struct idpf_vport *idpf_vport_alloc(struct idpf_eth_adapter *adapter,
 				    struct idpf_max_q *max_q)
 {
 	struct idpf_rss_data *rss_data;
-	u16 idx = adapter->next_vport;
 	struct idpf_vport *vport;
 	u16 num_max_q;
-
-	if (idx == IDPF_NO_FREE_SLOT)
-		return NULL;
 
 	vport = kzalloc(sizeof(*vport), GFP_KERNEL);
 	if (!vport)
 		return NULL;
 
-	if (!adapter->vport_config[idx]) {
-		struct idpf_vport_config *vport_config;
-
-		vport_config = kzalloc(sizeof(*vport_config), GFP_KERNEL);
-		if (!vport_config) {
+	if (!adapter->vport_config) {
+		adapter->vport_config = kzalloc(sizeof(*adapter->vport_config),
+						GFP_KERNEL);
+		if (!adapter->vport_config) {
 			kfree(vport);
-
 			return NULL;
 		}
-
-		adapter->vport_config[idx] = vport_config;
 	}
 
-	vport->idx = idx;
 	num_max_q = max(max_q->max_txq, max_q->max_rxq);
 	vport->msix_table = kcalloc(num_max_q, sizeof(*vport->msix_table),
 				    GFP_KERNEL);
 	if (!vport->msix_table)
 		goto free_vport;
 
+	vport->idx = adapter->dev_info->idx;
 	vport->adapter = adapter;
 	vport->compln_clean_budget = IDPF_TX_COMPLQ_CLEAN_BUDGET;
 	if (adapter->dev_info->vport_type == IDPF_DEFAULT_VPORT)
@@ -359,7 +312,7 @@ struct idpf_vport *idpf_vport_alloc(struct idpf_eth_adapter *adapter,
 	 * and soft reset we'll need a new LUT but the key can remain the same
 	 * for as long as the vport exists.
 	 */
-	rss_data = &adapter->vport_config[idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config->user_config.rss_data;
 	rss_data->rss_key = kzalloc(rss_data->rss_key_size, GFP_KERNEL);
 	if (!rss_data->rss_key)
 		goto free_qvec_idxs;
@@ -368,13 +321,10 @@ struct idpf_vport *idpf_vport_alloc(struct idpf_eth_adapter *adapter,
 	netdev_rss_key_fill((void *)rss_data->rss_key, rss_data->rss_key_size);
 
 	/* fill vport slot in the adapter struct */
-	adapter->vports[idx] = vport;
-	adapter->vport_ids[idx] = idpf_get_vport_id(vport);
-
-	adapter->num_alloc_vports++;
-
-	/* prepare adapter->next_vport for next use */
-	adapter->next_vport = idpf_get_free_slot(adapter);
+	adapter->vport = vport;
+	vport->vport_id = idpf_get_vport_id(vport);
+	/* Save vport_id also in dev_info to query eth_adapter */
+	adapter->dev_info->vport_id = vport->vport_id;
 
 	return vport;
 
@@ -446,12 +396,11 @@ int idpf_vport_init(struct idpf_vport *vport, struct idpf_max_q *max_q)
 	u16 tx_itr[] = {2, 8, 64, 128, 256};
 	u16 rx_itr[] = {2, 8, 32, 96, 128};
 	struct idpf_rss_data *rss_data;
-	u16 idx = vport->idx;
 	int err;
 
-	vport_config = adapter->vport_config[idx];
+	vport_config = adapter->vport_config;
 	rss_data = &vport_config->user_config.rss_data;
-	vport_msg = adapter->vport_params_recvd[idx];
+	vport_msg = adapter->vport_params_recvd;
 
 	vport_config->max_q.max_txq = max_q->max_txq;
 	vport_config->max_q.max_rxq = max_q->max_rxq;
@@ -595,7 +544,6 @@ int idpf_queue_reg_init(struct idpf_vport *vport)
 	struct virtchnl2_create_vport *vport_params;
 	struct virtchnl2_queue_reg_chunks *chunks;
 	struct idpf_vport_config *vport_config;
-	u16 vport_idx = vport->idx;
 	int num_regs, ret = 0;
 	u32 *reg_vals;
 
@@ -604,13 +552,13 @@ int idpf_queue_reg_init(struct idpf_vport *vport)
 	if (!reg_vals)
 		return -ENOMEM;
 
-	vport_config = vport->adapter->vport_config[vport_idx];
+	vport_config = vport->adapter->vport_config;
 	if (vport_config->req_qs_chunks) {
 		struct virtchnl2_add_queues *vc_aq =
 		  (struct virtchnl2_add_queues *)vport_config->req_qs_chunks;
 		chunks = &vc_aq->chunks;
 	} else {
-		vport_params = vport->adapter->vport_params_recvd[vport_idx];
+		vport_params = vport->adapter->vport_params_recvd;
 		chunks = &vport_params->chunks;
 	}
 
@@ -757,19 +705,14 @@ static void idpf_rx_init_buf_tail(struct idpf_vport *vport)
  */
 void idpf_set_vport_state(struct idpf_eth_adapter *adapter)
 {
-	u16 i;
+	struct idpf_netdev_priv *np;
 
-	for (i = 0; i < adapter->dev_info->default_vports; i++) {
-		struct idpf_netdev_priv *np;
+	if (!adapter->netdev)
+		return;
 
-		if (!adapter->netdevs[i])
-			continue;
-
-		np = netdev_priv(adapter->netdevs[i]);
-		if (np->state == __IDPF_VPORT_UP)
-			set_bit(IDPF_VPORT_UP_REQUESTED,
-				adapter->vport_config[i]->flags);
-	}
+	np = netdev_priv(adapter->netdev);
+	if (np->state == __IDPF_VPORT_UP)
+		set_bit(IDPF_VPORT_UP_REQUESTED, adapter->vport_config->flags);
 }
 
 /**
@@ -875,7 +818,7 @@ int idpf_vport_open(struct idpf_vport *vport, bool alloc_res)
 
 	idpf_restore_features(vport);
 
-	vport_config = adapter->vport_config[vport->idx];
+	vport_config = adapter->vport_config;
 	if (vport_config->user_config.rss_data.rss_lut)
 		err = idpf_config_rss(vport);
 	else
@@ -1078,10 +1021,9 @@ int idpf_vport_manage_rss_lut(struct idpf_vport *vport)
 {
 	bool ena = idpf_is_feature_ena(vport, NETIF_F_RXHASH);
 	struct idpf_rss_data *rss_data;
-	u16 idx = vport->idx;
 	int lut_size;
 
-	rss_data = &vport->adapter->vport_config[idx]->user_config.rss_data;
+	rss_data = &vport->adapter->vport_config->user_config.rss_data;
 	lut_size = rss_data->rss_lut_size * sizeof(u32);
 
 	if (ena) {

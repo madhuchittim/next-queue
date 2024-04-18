@@ -656,9 +656,13 @@ void idpf_idc_eth_device_init_task(struct work_struct *work)
 	/* Initialize eth_shared hw_addr for ethernet device to use */
 	adapter->eth_shared.hw_addr = adapter->hw.hw_addr;
 
-	/* Initialize ethernet auxiliary device(s) */
 	if (!adapter->adevs)
+		/* Initialize ethernet auxiliary device(s) */
 		idpf_eth_idc_device_init(adapter);
+
+	/* Auxiliary driver (eth) is up, initiate post init */
+	idpf_eth_idc_dispatch_event(adapter, IDPF_ETH_IDC_EVENT_ALL_VPORTS,
+				    IDPF_ETH_IDC_EVENT_POST_INIT, NULL);
 }
 
 /**

@@ -71,7 +71,7 @@ int idpf_del_mac_filter(struct idpf_vport *vport,
 	struct idpf_vport_config *vport_config;
 	struct idpf_mac_filter *f;
 
-	vport_config = np->adapter->vport_config[np->vport_idx];
+	vport_config = np->adapter->vport_config;
 
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 	f = idpf_find_mac_filter(vport_config, macaddr);
@@ -150,7 +150,7 @@ int idpf_add_mac_filter(struct idpf_vport *vport,
 	struct idpf_vport_config *vport_config;
 	int err;
 
-	vport_config = np->adapter->vport_config[np->vport_idx];
+	vport_config = np->adapter->vport_config;
 	err = __idpf_add_mac_filter(vport_config, macaddr);
 	if (err)
 		return err;
@@ -172,7 +172,7 @@ void idpf_del_all_mac_filters(struct idpf_vport *vport)
 	struct idpf_vport_config *vport_config;
 	struct idpf_mac_filter *f, *ftmp;
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	vport_config = vport->adapter->vport_config;
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 
 	list_for_each_entry_safe(f, ftmp,
@@ -197,7 +197,7 @@ void idpf_restore_mac_filters(struct idpf_vport *vport)
 	struct idpf_vport_config *vport_config;
 	struct idpf_mac_filter *f;
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	vport_config = vport->adapter->vport_config;
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 
 	list_for_each_entry(f, &vport_config->user_config.mac_filter_list, list)
@@ -221,7 +221,7 @@ void idpf_remove_mac_filters(struct idpf_vport *vport)
 	struct idpf_vport_config *vport_config;
 	struct idpf_mac_filter *f;
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	vport_config = vport->adapter->vport_config;
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 
 	list_for_each_entry(f, &vport_config->user_config.mac_filter_list, list)
@@ -242,7 +242,7 @@ void idpf_deinit_mac_addr(struct idpf_vport *vport)
 	struct idpf_vport_config *vport_config;
 	struct idpf_mac_filter *f;
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	vport_config = vport->adapter->vport_config;
 
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 
@@ -317,7 +317,6 @@ static int idpf_mac_filter_async_handler(void *async_ctx,
 	struct idpf_eth_adapter *adapter;
 	struct idpf_mac_filter *f, *tmp;
 	struct list_head *ma_list_head;
-	struct idpf_vport *vport;
 	struct device *dev;
 	u16 num_entries;
 	int i;
@@ -339,11 +338,10 @@ static int idpf_mac_filter_async_handler(void *async_ctx,
 	if (xn->reply_sz < struct_size(ma_list, mac_addr_list, num_entries))
 		goto invalid_payload;
 
-	vport = idpf_vid_to_vport(adapter, le32_to_cpu(ma_list->vport_id));
-	if (!vport)
+	if (!adapter->vport)
 		goto invalid_payload;
 
-	vport_config = adapter->vport_config[le32_to_cpu(ma_list->vport_id)];
+	vport_config = adapter->vport_config;
 	ma_list_head = &vport_config->user_config.mac_filter_list;
 
 	/* We can't do much to reconcile bad filters at this point, however we
@@ -402,7 +400,7 @@ int idpf_add_del_mac_filters(struct idpf_vport *vport,
 	xn_params.async_handler = idpf_mac_filter_async_handler;
 	xn_params.async_ctx = adapter;
 
-	vport_config = adapter->vport_config[np->vport_idx];
+	vport_config = adapter->vport_config;
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
 
 	/* Find the number of newly added filters */
