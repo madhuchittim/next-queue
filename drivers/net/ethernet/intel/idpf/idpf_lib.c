@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
 #include "idpf.h"
-#include "idpf_netdev.h"
-#include "idpf_fltr.h"
-#include "idpf_virtchnl.h"
 
 /**
  * idpf_init_vector_stack - Fill the MSIX vector stack with vector index
@@ -67,7 +64,7 @@ static void idpf_deinit_vector_stack(struct idpf_adapter *adapter)
  */
 static void idpf_mb_intr_rel_irq(struct idpf_adapter *adapter)
 {
-	clear_bit(IDPF_MB_INTR_MODE, adapter->flags);
+	clear_bit(IDPF_MB_INTR_MODE, idpf_adapter_flags(adapter));
 	free_irq(adapter->msix_entries[0].vector, adapter);
 	queue_delayed_work(adapter->mbx_wq, &adapter->mbx_task, 0);
 }
@@ -124,22 +121,23 @@ static void idpf_mb_irq_enable(struct idpf_adapter *adapter)
 static int idpf_mb_intr_req_irq(struct idpf_adapter *adapter)
 {
 	struct idpf_q_vector *mb_vector = &adapter->mb_vector;
+	struct device *dev = &adapter->pdev->dev;
 	int irq_num, mb_vidx = 0, err;
 
 	irq_num = adapter->msix_entries[mb_vidx].vector;
 	mb_vector->name = kasprintf(GFP_KERNEL, "%s-%s-%d",
-				    dev_driver_string(&adapter->pdev->dev),
+				    dev_driver_string(dev),
 				    "Mailbox", mb_vidx);
 	err = request_irq(irq_num, adapter->irq_mb_handler, 0,
 			  mb_vector->name, adapter);
 	if (err) {
-		dev_err(&adapter->pdev->dev,
+		dev_err(dev,
 			"IRQ request for mailbox failed, error: %d\n", err);
 
 		return err;
 	}
 
-	set_bit(IDPF_MB_INTR_MODE, adapter->flags);
+	set_bit(IDPF_MB_INTR_MODE, idpf_adapter_flags(adapter));
 
 	return 0;
 }
@@ -184,7 +182,8 @@ static int idpf_vector_lifo_push(struct idpf_adapter *adapter, u16 vec_idx)
 	lockdep_assert_held(&adapter->vector_lock);
 
 	if (stack->top == stack->base) {
-		dev_err(&adapter->pdev->dev, "Exceeded the vector stack limit: %d\n",
+		dev_err(&adapter->pdev->dev,
+			"Exceeded the vector stack limit: %d\n",
 			stack->top);
 		return -EINVAL;
 	}
@@ -201,11 +200,12 @@ static int idpf_vector_lifo_push(struct idpf_adapter *adapter, u16 vec_idx)
 static int idpf_vector_lifo_pop(struct idpf_adapter *adapter)
 {
 	struct idpf_vector_lifo *stack = &adapter->vector_stack;
+	struct device *dev = &adapter->pdev->dev;
 
 	lockdep_assert_held(&adapter->vector_lock);
 
 	if (stack->top == stack->size) {
-		dev_err(&adapter->pdev->dev, "No interrupt vectors are available to distribute!\n");
+		dev_err(dev, "No interrupt vectors are available to distribute!\n");
 
 		return -EINVAL;
 	}
@@ -250,6 +250,7 @@ static void idpf_vector_stash(struct idpf_adapter *adapter, u16 *q_vector_idxs,
  * @adapter: driver specific private structure
  * @q_vector_idxs: vector index array
  * @vec_info: info related to the number of vectors
+ * @msix_table: MSIX table
  *
  * This is the core function to distribute the MSIX vectors acquired from the
  * OS. It expects the caller to pass the number of vectors required and
@@ -265,7 +266,8 @@ static void idpf_vector_stash(struct idpf_adapter *adapter, u16 *q_vector_idxs,
  */
 int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
 				u16 *q_vector_idxs,
-				struct idpf_vector_info *vec_info)
+				struct idpf_vector_info *vec_info,
+				struct msix_entry *msix_table)
 {
 	u16 num_req_vecs, num_alloc_vecs = 0, max_vecs;
 	struct idpf_vector_lifo *stack;
@@ -300,6 +302,9 @@ int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
 		q_vector_idxs[num_alloc_vecs++] = vecid;
 	}
 	adapter->num_avail_msix -= max_vecs;
+	/* Return msix entries into msix_table */
+	for (j = 0; j < num_alloc_vecs; ++j)
+		msix_table[j] = adapter->msix_entries[q_vector_idxs[j]];
 
 rel_lock:
 	mutex_unlock(&adapter->vector_lock);
@@ -315,7 +320,6 @@ rel_lock:
  */
 int idpf_intr_req(struct idpf_adapter *adapter)
 {
-	u16 default_vports = idpf_get_default_vports(adapter);
 	int num_q_vecs, total_vecs, num_vec_ids;
 	int min_vectors, v_actual, err;
 	unsigned int vector;
@@ -332,17 +336,19 @@ int idpf_intr_req(struct idpf_adapter *adapter)
 		return -EAGAIN;
 	}
 
-	min_vectors = IDPF_MBX_Q_VEC + IDPF_MIN_Q_VEC * default_vports;
+	min_vectors = IDPF_MBX_Q_VEC + IDPF_MIN_Q_VEC * adapter->default_vports;
 	v_actual = pci_alloc_irq_vectors(adapter->pdev, min_vectors,
 					 total_vecs, PCI_IRQ_MSIX);
 	if (v_actual < min_vectors) {
-		dev_err(&adapter->pdev->dev, "Failed to allocate MSIX vectors: %d\n",
+		dev_err(&adapter->pdev->dev,
+			"Failed to allocate MSIX vectors: %d\n",
 			v_actual);
 		err = -EAGAIN;
 		goto send_dealloc_vecs;
 	}
 
-	adapter->msix_entries = kcalloc(v_actual, sizeof(struct msix_entry),
+	adapter->msix_entries = kcalloc(v_actual,
+					sizeof(struct msix_entry),
 					GFP_KERNEL);
 
 	if (!adapter->msix_entries) {
@@ -421,28 +427,6 @@ send_dealloc_vecs:
 }
 
 /**
- * idpf_statistics_task - Delayed task to get statistics over mailbox
- * @work: work_struct handle to our data
- */
-void idpf_statistics_task(struct work_struct *work)
-{
-	struct idpf_adapter *adapter;
-	int i;
-
-	adapter = container_of(work, struct idpf_adapter, stats_task.work);
-
-	for (i = 0; i < adapter->max_vports; i++) {
-		struct idpf_vport *vport = adapter->vports[i];
-
-		if (vport && !test_bit(IDPF_HR_RESET_IN_PROG, adapter->flags))
-			idpf_send_get_stats_msg(vport);
-	}
-
-	queue_delayed_work(adapter->stats_wq, &adapter->stats_task,
-			   msecs_to_jiffies(10000));
-}
-
-/**
  * idpf_mbx_task - Delayed task to handle mailbox responses
  * @work: work_struct handle
  */
@@ -452,7 +436,7 @@ void idpf_mbx_task(struct work_struct *work)
 
 	adapter = container_of(work, struct idpf_adapter, mbx_task.work);
 
-	if (test_bit(IDPF_MB_INTR_MODE, adapter->flags))
+	if (test_bit(IDPF_MB_INTR_MODE, idpf_adapter_flags(adapter)))
 		idpf_mb_irq_enable(adapter);
 	else
 		queue_delayed_work(adapter->mbx_wq, &adapter->mbx_task,
@@ -474,9 +458,9 @@ void idpf_service_task(struct work_struct *work)
 
 	if (idpf_is_reset_detected(adapter) &&
 	    !idpf_is_reset_in_prog(adapter) &&
-	    !test_bit(IDPF_REMOVE_IN_PROG, adapter->flags)) {
+	    !test_bit(IDPF_REMOVE_IN_PROG, idpf_adapter_flags(adapter))) {
 		dev_info(&adapter->pdev->dev, "HW reset detected\n");
-		set_bit(IDPF_HR_FUNC_RESET, adapter->flags);
+		set_bit(IDPF_HR_FUNC_RESET, idpf_adapter_flags(adapter));
 		queue_delayed_work(adapter->vc_event_wq,
 				   &adapter->vc_event_task,
 				   msecs_to_jiffies(10));
@@ -484,129 +468,6 @@ void idpf_service_task(struct work_struct *work)
 
 	queue_delayed_work(adapter->serv_wq, &adapter->serv_task,
 			   msecs_to_jiffies(300));
-}
-
-/**
- * idpf_init_task - Delayed initialization task
- * @work: work_struct handle to our data
- *
- * Init task finishes up pending work started in probe. Due to the asynchronous
- * nature in which the device communicates with hardware, we may have to wait
- * several milliseconds to get a response.  Instead of busy polling in probe,
- * pulling it out into a delayed work task prevents us from bogging down the
- * whole system waiting for a response from hardware.
- */
-void idpf_init_task(struct work_struct *work)
-{
-	struct idpf_vport_config *vport_config;
-	struct idpf_vport_max_q max_q;
-	struct idpf_adapter *adapter;
-	struct idpf_netdev_priv *np;
-	struct idpf_vport *vport;
-	u16 num_default_vports;
-	struct pci_dev *pdev;
-	bool default_vport;
-	int index, err;
-
-	adapter = container_of(work, struct idpf_adapter, init_task.work);
-
-	num_default_vports = idpf_get_default_vports(adapter);
-	if (adapter->num_alloc_vports < num_default_vports)
-		default_vport = true;
-	else
-		default_vport = false;
-
-	err = idpf_vport_alloc_max_qs(adapter, &max_q);
-	if (err)
-		goto unwind_vports;
-
-	err = idpf_send_create_vport_msg(adapter, &max_q);
-	if (err) {
-		idpf_vport_dealloc_max_qs(adapter, &max_q);
-		goto unwind_vports;
-	}
-
-	pdev = adapter->pdev;
-	vport = idpf_vport_alloc(adapter, &max_q);
-	if (!vport) {
-		err = -EFAULT;
-		dev_err(&pdev->dev, "failed to allocate vport: %d\n",
-			err);
-		idpf_vport_dealloc_max_qs(adapter, &max_q);
-		goto unwind_vports;
-	}
-
-	index = vport->idx;
-	vport_config = adapter->vport_config[index];
-
-	init_waitqueue_head(&vport->sw_marker_wq);
-
-	spin_lock_init(&vport_config->mac_filter_list_lock);
-
-	INIT_LIST_HEAD(&vport_config->user_config.mac_filter_list);
-
-	err = idpf_check_supported_desc_ids(vport);
-	if (err) {
-		dev_err(&pdev->dev, "failed to get required descriptor ids\n");
-		goto cfg_netdev_err;
-	}
-
-	if (idpf_cfg_netdev(vport))
-		goto cfg_netdev_err;
-
-	err = idpf_send_get_rx_ptype_msg(vport);
-	if (err)
-		goto handle_err;
-
-	/* Once state is put into DOWN, driver is ready for dev_open */
-	np = netdev_priv(vport->netdev);
-	np->state = __IDPF_VPORT_DOWN;
-	if (test_and_clear_bit(IDPF_VPORT_UP_REQUESTED, vport_config->flags))
-		idpf_vport_open(vport, true);
-
-	/* Spawn and return 'idpf_init_task' work queue until all the
-	 * default vports are created
-	 */
-	if (adapter->num_alloc_vports < num_default_vports) {
-		queue_delayed_work(adapter->init_wq, &adapter->init_task,
-				   msecs_to_jiffies(5 * (adapter->pdev->devfn & 0x07)));
-
-		return;
-	}
-
-	for (index = 0; index < adapter->max_vports; index++) {
-		if (adapter->netdevs[index] &&
-		    !test_bit(IDPF_VPORT_REG_NETDEV,
-			      adapter->vport_config[index]->flags)) {
-			register_netdev(adapter->netdevs[index]);
-			set_bit(IDPF_VPORT_REG_NETDEV,
-				adapter->vport_config[index]->flags);
-		}
-	}
-
-	/* As all the required vports are created, clear the reset flag
-	 * unconditionally here in case we were in reset and the link was down.
-	 */
-	clear_bit(IDPF_HR_RESET_IN_PROG, adapter->flags);
-	/* Start the statistics task now */
-	queue_delayed_work(adapter->stats_wq, &adapter->stats_task,
-			   msecs_to_jiffies(10 * (pdev->devfn & 0x07)));
-
-	return;
-
-handle_err:
-	idpf_decfg_netdev(vport);
-cfg_netdev_err:
-	idpf_vport_rel(vport);
-	adapter->vports[index] = NULL;
-unwind_vports:
-	if (default_vport) {
-		for (index = 0; index < adapter->max_vports; index++) {
-			if (adapter->vports[index])
-				idpf_vport_dealloc(adapter->vports[index]);
-		}
-	}
-	clear_bit(IDPF_HR_RESET_IN_PROG, adapter->flags);
 }
 
 /**
@@ -651,7 +512,8 @@ int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs)
 {
 	struct idpf_adapter *adapter = pci_get_drvdata(pdev);
 
-	if (!idpf_is_cap_ena(adapter, IDPF_OTHER_CAPS, VIRTCHNL2_CAP_SRIOV)) {
+	if (!idpf_is_cap_ena(idpf_caps(adapter), IDPF_OTHER_CAPS,
+			     VIRTCHNL2_CAP_SRIOV)) {
 		dev_info(&pdev->dev, "SR-IOV is not supported on this device\n");
 
 		return -EOPNOTSUPP;
@@ -661,7 +523,8 @@ int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs)
 		return idpf_sriov_ena(adapter, num_vfs);
 
 	if (pci_vfs_assigned(pdev)) {
-		dev_warn(&pdev->dev, "Unable to free VFs because some are assigned to VMs\n");
+		dev_warn(&pdev->dev,
+			 "Unable to free VFs because some are assigned to VMs\n");
 
 		return -EBUSY;
 	}
@@ -671,33 +534,6 @@ int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs)
 	adapter->num_vfs = 0;
 
 	return 0;
-}
-
-/**
- * idpf_deinit_task - Device deinit routine
- * @adapter: Driver specific private structure
- *
- * Extended remove logic which will be used for
- * hard reset as well
- */
-void idpf_deinit_task(struct idpf_adapter *adapter)
-{
-	unsigned int i;
-
-	/* Wait until the init_task is done else this thread might release
-	 * the resources first and the other thread might end up in a bad state
-	 */
-	cancel_delayed_work_sync(&adapter->init_task);
-
-	if (!adapter->vports)
-		return;
-
-	cancel_delayed_work_sync(&adapter->stats_task);
-
-	for (i = 0; i < adapter->max_vports; i++) {
-		if (adapter->vports[i])
-			idpf_vport_dealloc(adapter->vports[i]);
-	}
 }
 
 /**
@@ -730,7 +566,7 @@ static int idpf_check_reset_complete(struct idpf_hw *hw,
 	/* Clear the reset flag unconditionally here since the reset
 	 * technically isn't in progress anymore from the driver's perspective
 	 */
-	clear_bit(IDPF_HR_RESET_IN_PROG, adapter->flags);
+	clear_bit(IDPF_HR_RESET_IN_PROG, idpf_adapter_flags(adapter));
 
 	return -EBUSY;
 }
@@ -747,31 +583,19 @@ static int idpf_init_hard_reset(struct idpf_adapter *adapter)
 {
 	struct idpf_reg_ops *reg_ops = &adapter->dev_ops.reg_ops;
 	struct device *dev = &adapter->pdev->dev;
-	struct net_device *netdev;
 	int err;
-	u16 i;
 
-	mutex_lock(&adapter->vport_ctrl_lock);
+	mutex_lock(&adapter->reset_lock);
 
 	dev_info(dev, "Device HW Reset initiated\n");
 
-	/* Avoid TX hangs on reset */
-	for (i = 0; i < adapter->max_vports; i++) {
-		netdev = adapter->netdevs[i];
-		if (!netdev)
-			continue;
-
-		netif_carrier_off(netdev);
-		netif_tx_disable(netdev);
-	}
-
 	/* Prepare for reset */
-	if (test_and_clear_bit(IDPF_HR_DRV_LOAD, adapter->flags)) {
+	if (test_and_clear_bit(IDPF_HR_DRV_LOAD, idpf_adapter_flags(adapter))) {
 		reg_ops->trigger_reset(adapter, IDPF_HR_DRV_LOAD);
-	} else if (test_and_clear_bit(IDPF_HR_FUNC_RESET, adapter->flags)) {
+	} else if (test_and_clear_bit(IDPF_HR_FUNC_RESET,
+				      idpf_adapter_flags(adapter))) {
 		bool is_reset = idpf_is_reset_detected(adapter);
 
-		idpf_set_vport_state(adapter);
 		idpf_vc_core_deinit(adapter);
 		if (!is_reset)
 			reg_ops->trigger_reset(adapter, IDPF_HR_FUNC_RESET);
@@ -808,16 +632,33 @@ static int idpf_init_hard_reset(struct idpf_adapter *adapter)
 		goto unlock_mutex;
 	}
 
-	/* Wait till all the vports are initialized to release the reset lock,
-	 * else user space callbacks may access uninitialized vports
-	 */
-	while (test_bit(IDPF_HR_RESET_IN_PROG, adapter->flags))
-		msleep(100);
+	mutex_unlock(&adapter->reset_lock);
+
+	clear_bit(IDPF_HR_RESET_IN_PROG, idpf_adapter_flags(adapter));
+
+	return 0;
 
 unlock_mutex:
-	mutex_unlock(&adapter->vport_ctrl_lock);
+	mutex_unlock(&adapter->reset_lock);
 
 	return err;
+}
+
+/**
+ * idpf_idc_eth_device_init_task - Schedule idc eth device init task
+ * @work: work_struct handle to our data
+ */
+void idpf_idc_eth_device_init_task(struct work_struct *work)
+{
+	struct idpf_adapter *adapter =
+		container_of(work, struct idpf_adapter, idc_eth_init_task.work);
+
+	/* Initialize eth_shared hw_addr for ethernet device to use */
+	adapter->eth_shared.hw_addr = adapter->hw.hw_addr;
+
+	/* Initialize ethernet auxiliary device(s) */
+	if (!adapter->adevs)
+		idpf_eth_idc_device_init(adapter);
 }
 
 /**
@@ -827,51 +668,37 @@ unlock_mutex:
 void idpf_vc_event_task(struct work_struct *work)
 {
 	struct idpf_adapter *adapter;
+	int err;
 
 	adapter = container_of(work, struct idpf_adapter, vc_event_task.work);
 
-	if (test_bit(IDPF_REMOVE_IN_PROG, adapter->flags))
+	if (test_bit(IDPF_REMOVE_IN_PROG, idpf_adapter_flags(adapter)))
 		return;
 
-	if (test_bit(IDPF_HR_FUNC_RESET, adapter->flags) ||
-	    test_bit(IDPF_HR_DRV_LOAD, adapter->flags)) {
-		set_bit(IDPF_HR_RESET_IN_PROG, adapter->flags);
-		idpf_init_hard_reset(adapter);
+	if (test_bit(IDPF_HR_FUNC_RESET, idpf_adapter_flags(adapter)) ||
+	    test_bit(IDPF_HR_DRV_LOAD, idpf_adapter_flags(adapter))) {
+		set_bit(IDPF_HR_RESET_IN_PROG, idpf_adapter_flags(adapter));
+	
+		if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)))
+			idpf_vc_xn_shutdown(adapter->vcxn_mngr);
+
+		/* Notify ethernet layer of reset event */
+		idpf_eth_idc_dispatch_event(adapter,
+					    IDPF_ETH_IDC_EVENT_ALL_VPORTS,
+					    IDPF_ETH_IDC_EVENT_RESET_INITIATED,
+					    NULL);
+		err = idpf_init_hard_reset(adapter);
+		if (err)
+			return;
+
+		/* Notify ethernet layer of reset completion */
+		idpf_eth_idc_dispatch_event(adapter, IDPF_ETH_IDC_EVENT_ALL_VPORTS,
+					IDPF_ETH_IDC_EVENT_RESET_COMPLETE, NULL);
+
+		/* Schedule task to initialize ethernet idc */
+		queue_delayed_work(adapter->idc_eth_init_wq,
+				   &adapter->idc_eth_init_task, 0);
 	}
-}
-
-/**
- * idpf_vport_manage_rss_lut - disable/enable RSS
- * @vport: the vport being changed
- *
- * In the event of disable request for RSS, this function will zero out RSS
- * LUT, while in the event of enable request for RSS, it will reconfigure RSS
- * LUT with the default LUT configuration.
- */
-int idpf_vport_manage_rss_lut(struct idpf_vport *vport)
-{
-	bool ena = idpf_is_feature_ena(vport, NETIF_F_RXHASH);
-	struct idpf_rss_data *rss_data;
-	u16 idx = vport->idx;
-	int lut_size;
-
-	rss_data = &vport->adapter->vport_config[idx]->user_config.rss_data;
-	lut_size = rss_data->rss_lut_size * sizeof(u32);
-
-	if (ena) {
-		/* This will contain the default or user configured LUT */
-		memcpy(rss_data->rss_lut, rss_data->cached_lut, lut_size);
-	} else {
-		/* Save a copy of the current LUT to be restored later if
-		 * requested.
-		 */
-		memcpy(rss_data->cached_lut, rss_data->rss_lut, lut_size);
-
-		/* Zero out the current LUT to disable */
-		memset(rss_data->rss_lut, 0, lut_size);
-	}
-
-	return idpf_config_rss(vport);
 }
 
 /**
@@ -946,4 +773,30 @@ int idpf_intr_init_vec_idx(struct idpf_adapter *adapter,
 	kfree(vecids);
 
 	return 0;
+}
+
+/**
+ * idpf_recv_eth_event - Idpf driver receives event from ethernet driver
+ * @adapter: Main driver's adapter information struct
+ * @event: Event information
+ *
+ * Idpf receives the event sent by the ethernet driver.
+ */
+void idpf_recv_eth_event(struct idpf_adapter *adapter,
+			 struct idpf_eth_idc_event *event)
+{
+	switch (event->event_code) {
+	case IDPF_ETH_IDC_EVENT_REQ_HARD_RESET:
+		if (!idpf_is_reset_in_prog(adapter)) {
+			set_bit(IDPF_HR_FUNC_RESET,
+				idpf_adapter_flags(adapter));
+			queue_delayed_work(adapter->vc_event_wq,
+					   &adapter->vc_event_task,
+					   msecs_to_jiffies(10));
+		}
+		break;
+
+	default:
+		break;
+	}
 }

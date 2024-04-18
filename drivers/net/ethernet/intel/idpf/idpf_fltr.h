@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
 #ifndef _IDPF_FLTR_H_
 #define _IDPF_FLTR_H_
@@ -37,7 +37,7 @@ int idpf_del_mac_filter(struct idpf_vport *vport,
 int idpf_add_del_mac_filters(struct idpf_vport *vport,
 			     struct idpf_netdev_priv *np,
 			     bool add, bool async);
-int idpf_set_promiscuous(struct idpf_adapter *adapter,
+int idpf_set_promiscuous(struct idpf_eth_adapter *adapter,
 			 struct idpf_vport_user_config_data *config_data,
 			 u32 vport_id);
 

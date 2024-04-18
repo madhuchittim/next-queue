@@ -4,125 +4,144 @@
 #ifndef _IDPF_ETH_IDC_H_
 #define _IDPF_ETH_IDC_H_
 
-/**
- * enum idpf_vport_reset_cause - Vport soft reset causes
- * @IDPF_SR_Q_CHANGE: Soft reset queue change
- * @IDPF_SR_Q_DESC_CHANGE: Soft reset descriptor change
- * @IDPF_SR_MTU_CHANGE: Soft reset MTU change
- * @IDPF_SR_RSC_CHANGE: Soft reset RSC change
- */
-enum idpf_vport_reset_cause {
-	IDPF_SR_Q_CHANGE,
-	IDPF_SR_Q_DESC_CHANGE,
-	IDPF_SR_MTU_CHANGE,
-	IDPF_SR_RSC_CHANGE,
+#include <linux/auxiliary_bus.h>
+#include "idpf_eth_common.h"
+
+enum idpf_eth_idc_event_code {
+	/* Following events are from main driver to aux/eth driver */
+	IDPF_ETH_IDC_EVENT_LINK_CHANGE,
+	IDPF_ETH_IDC_EVENT_RESET_INITIATED,
+	IDPF_ETH_IDC_EVENT_RESET_COMPLETE,
+	IDPF_ETH_IDC_EVENT_REMOVE,
+
+	/* Following requests are from auxiliary eth driver to main driver */
+	IDPF_ETH_IDC_EVENT_REQ_HARD_RESET,
 };
 
 /**
- * struct idpf_vector_info - Utility structure to pass function arguments as a
- *			     structure
- * @num_req_vecs: Vectors required based on the number of queues updated by the
- *		  user via ethtool
- * @num_curr_vecs: Current number of vectors, must be >= @num_req_vecs
- * @index: Relative starting index for vectors
- * @default_vport: Vectors are for default vport
+ * struct idpf_eth_idc_auxiliary_dev_caps - Capabilities info
+ * @csum_caps: See enum virtchnl2_cap_txrx_csum
+ * @seg_caps: See enum virtchnl2_cap_seg
+ * @hsplit_caps: See enum virtchnl2_cap_rx_hsplit_at
+ * @rsc_caps: See enum virtchnl2_cap_rsc
+ * @rss_caps: See enum virtchnl2_cap_rss
+ * @other_caps: See enum virtchnl2_cap_other
+ * @max_tx_hdr_size: Max header length hardware can parse/checksum, in bytes.
+ * @max_sg_bufs_per_tx_pkt: Max number of scatter gather buffers that can be
+ *			    sent per transmit packet without needing to be
+ *			    linearized.
+ * @min_sso_packet_len: Min packet length supported by device for single
+ *	segment offload
+ * @q_info: Max queue information
+ * @crc_enable: Enable CRC insertion offload
  */
-struct idpf_vector_info {
-	u16 num_req_vecs;
-	u16 num_curr_vecs;
-	u16 index;
-	bool default_vport;
+struct idpf_eth_idc_auxiliary_dev_caps {
+	__le32 csum_caps;
+	__le32 seg_caps;
+	__le32 hsplit_caps;
+	__le32 rsc_caps;
+	__le64 rss_caps;
+	__le64 other_caps;
+	__le16 max_tx_hdr_size;
+	u8 max_sg_bufs_per_tx_pkt;
+	u8 min_sso_packet_len;
+	struct idpf_max_q *q_info;
+	bool crc_enable;
 };
 
 /**
- * struct idpf_intr_reg
- * @dyn_ctl: Dynamic control interrupt register
- * @dyn_ctl_intena_m: Mask for dyn_ctl interrupt enable
- * @dyn_ctl_itridx_s: Register bit offset for ITR index
- * @dyn_ctl_itridx_m: Mask for ITR index
- * @dyn_ctl_intrvl_s: Register bit offset for ITR interval
- * @rx_itr: RX ITR register
- * @tx_itr: TX ITR register
- * @icr_ena: Interrupt cause register offset
- * @icr_ena_ctlq_m: Mask for ICR
+ * struct idpf_eth_idc_event - ethernet idc events
+ * @event_data: Event data
+ * @event_code: Event code
  */
-struct idpf_intr_reg {
-	void __iomem *dyn_ctl;
-	u32 dyn_ctl_intena_m;
-	u32 dyn_ctl_itridx_s;
-	u32 dyn_ctl_itridx_m;
-	u32 dyn_ctl_intrvl_s;
-	void __iomem *rx_itr;
-	void __iomem *tx_itr;
-	void __iomem *icr_ena;
-	u32 icr_ena_ctlq_m;
+struct idpf_eth_idc_event {
+	void *event_data;
+	enum idpf_eth_idc_event_code event_code;
 };
 
+struct idpf_eth_idc_dev_info;
 /**
- * struct idpf_q_vector
- * @vport: Vport back pointer
- * @affinity_mask: CPU affinity mask
- * @napi: napi handler
- * @v_idx: Vector index
- * @intr_reg: See struct idpf_intr_reg
- * @num_txq: Number of TX queues
- * @tx: Array of TX queues to service
- * @tx_dim: Data for TX net_dim algorithm
- * @tx_itr_value: TX interrupt throttling rate
- * @tx_intr_mode: Dynamic ITR or not
- * @tx_itr_idx: TX ITR index
- * @num_rxq: Number of RX queues
- * @rx: Array of RX queues to service
- * @rx_dim: Data for RX net_dim algorithm
- * @rx_itr_value: RX interrupt throttling rate
- * @rx_intr_mode: Dynamic ITR or not
- * @rx_itr_idx: RX ITR index
- * @num_bufq: Number of buffer queues
- * @bufq: Array of buffer queues to service
- * @total_events: Number of interrupts processed
- * @name: Queue vector name
+ * struct idpf_eth_idc_ops - Ethernet driver ops to main driver
+ * @event_send: Sends ethernet event to main driver
+ * @virtchnl_send: Sends Virtchnl messages call to main driver
+ * @intr_reg_init: Initialize interrupt registers call to main driver
+ * @intr_init_vec_idx: Initialize the vector indexes call to main driver
+ * @req_rel_vec_idx: Release vector indexes call to main driver
  */
-struct idpf_q_vector {
-	struct idpf_vport *vport;
-	cpumask_t affinity_mask;
-	struct napi_struct napi;
-	u16 v_idx;
-	struct idpf_intr_reg intr_reg;
-
-	u16 num_txq;
-	struct idpf_queue **tx;
-	struct dim tx_dim;
-	u16 tx_itr_value;
-	bool tx_intr_mode;
-	u32 tx_itr_idx;
-
-	u16 num_rxq;
-	struct idpf_queue **rx;
-	struct dim rx_dim;
-	u16 rx_itr_value;
-	bool rx_intr_mode;
-	u32 rx_itr_idx;
-
-	u16 num_bufq;
-	struct idpf_queue **bufq;
-
-	u16 total_events;
-	char *name;
+struct idpf_eth_idc_ops {
+	void (*event_send)(struct idpf_eth_idc_dev_info *dev_info,
+			   struct idpf_eth_idc_event *event);
+	size_t (*virtchnl_send)(struct idpf_eth_idc_dev_info *dev_info,
+				struct idpf_vc_xn_params *params);
+	int (*intr_reg_init)(struct idpf_eth_idc_dev_info *dev_info,
+			     u16 num_vecs, struct idpf_q_vector *q_vectors,
+			      u16 *q_vector_idxs);
+	int (*intr_init_vec_idx)(struct idpf_eth_idc_dev_info *dev_info,
+				 u16 num_vecs,
+				 struct idpf_q_vector *q_vectors,
+				 u16 *q_vector_idxs);
+	int (*req_rel_vec_idx)(struct idpf_eth_idc_dev_info *dev_info,
+			       u16 *num_vectors,
+			       struct idpf_vector_info *vec_info,
+			       struct msix_entry *msix_table);
 };
 
 /**
  * struct idpf_eth_shared - Common Device data struct shared with eth
- * @msg_enable: Debug message level enabled
+ * @pdev: PCI device struct given on probe
+ * @hw_addr: Hardware address for use by Ethernet driver
  */
 struct idpf_eth_shared {
-	u32 msg_enable;
+	struct idpf_eth_idc_ops eth_idc_ops;
+	void __iomem *hw_addr;
 };
 
-int idpf_intr_init_vec_idx(struct idpf_adapter *adapter,
-			   u16 num_vecs, struct idpf_q_vector *q_vectors,
-			   u16 *q_vector_idxs);
-int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
-				u16 *q_vector_idxs,
-				struct idpf_vector_info *vec_info);
+/**
+ * struct idpf_eth_idc_dev_info - Ethernet driver's device information struct
+ * @eth_shared: Ethernet shared data struct
+ * @idpf_context: Lower driver's context for callback
+ * @eth_context: Ethernet driver's context
+ * @vport_type: Vport type
+ * @caps: Auxiliary device capabilities
+ * @idx: Index number of auxiliary device
+ */
+struct idpf_eth_idc_dev_info {
+	struct idpf_eth_shared *eth_shared;
+	void *idpf_context;
+	void *eth_context;
+	enum idpf_vport_type vport_type;
+	struct idpf_eth_idc_auxiliary_dev_caps caps;
+	u32 default_vports;
+	u16 idx;
+};
+
+/**
+ * struct idpf_eth_idc_auxiliary_dev - Represents auxiliary device
+ * @adev: Auxiliary device
+ * @eth_info: Ethernet private data struct
+ */
+struct idpf_eth_idc_auxiliary_dev {
+	struct auxiliary_device adev;
+	struct idpf_eth_idc_dev_info eth_info;
+};
+
+/**
+ * struct idpf_eth_idc_auxiliary_driver - Ethernet driver info struct
+ * @all_probe_pre_init_done: Flag to indicate probe of all vports
+ * @max_vports: Maxumum number of vports
+ * @default_vports: Available default number of ports
+ * @event_handler: Ethernet driver's event handler
+ */
+struct idpf_eth_idc_auxiliary_driver {
+	void (*event_handler)(struct idpf_eth_idc_dev_info *dev_info,
+			      struct idpf_eth_idc_event *event);
+};
+
+#define idpf_dev_info_to_adapter(dev_info) \
+	((struct idpf_adapter *)((dev_info)->idpf_context))
+
+void idpf_eth_unregister(struct auxiliary_device *adev);
+int idpf_eth_device_add(struct auxiliary_device *adev,
+			const struct auxiliary_device_id *id);
 
 #endif /* !_IDPF_ETH_IDC_H_ */

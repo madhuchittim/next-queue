@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
-#include "idpf.h"
+#include "idpf_eth.h"
 #include "idpf_netdev.h"
 
 /**

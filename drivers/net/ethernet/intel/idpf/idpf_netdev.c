@@ -1,12 +1,59 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
-#include "idpf.h"
+#include "idpf_eth.h"
 #include "idpf_netdev.h"
 #include "idpf_fltr.h"
 
 static const struct net_device_ops idpf_netdev_ops_splitq;
 static const struct net_device_ops idpf_netdev_ops_singleq;
+
+/**
+ * idpf_tx_timeout - Respond to a Tx Hang
+ * @netdev: network interface device structure
+ * @txqueue: TX queue
+ */
+void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue)
+{
+	struct idpf_eth_adapter *adapter = idpf_netdev_to_adapter(netdev);
+	struct idpf_eth_idc_event event;
+
+	adapter->tx_timeout_count++;
+
+	netdev_err(netdev, "Detected Tx timeout: Count %d, Queue %d\n",
+		   adapter->tx_timeout_count, txqueue);
+	event.event_code = IDPF_ETH_IDC_EVENT_REQ_HARD_RESET;
+	idpf_eth_idc(adapter).event_send(adapter->dev_info, &event);
+}
+
+/**
+ * idpf_netdev_stop - Stop traffic from getting queued up
+ * @netdev: stack net device
+ */
+static void idpf_netdev_stop(struct net_device *netdev)
+{
+	if (!netdev)
+		return;
+
+	netif_carrier_off(netdev);
+	netif_tx_disable(netdev);
+}
+
+/**
+ * idpf_netdev_stop_all - Stop all traffic on all netdevs
+ * @adapter: Ethernet adapter struct
+ */
+void idpf_netdev_stop_all(struct idpf_eth_adapter *adapter)
+{
+	int default_vports = adapter->dev_info->default_vports;
+	int i;
+
+	for (i = 0; i < default_vports; i++) {
+		if (!adapter->netdevs[i])
+			continue;
+		idpf_netdev_stop(adapter->netdevs[i]);
+	}
+}
 
 /**
  * idpf_cfg_netdev - Allocate, configure and register a netdev
@@ -16,15 +63,19 @@ static const struct net_device_ops idpf_netdev_ops_singleq;
  */
 int idpf_cfg_netdev(struct idpf_vport *vport)
 {
-	struct idpf_adapter *adapter = vport->adapter;
+	struct idpf_eth_adapter *adapter = vport->adapter;
+	struct idpf_eth_idc_auxiliary_dev_caps *caps;
 	struct idpf_vport_config *vport_config;
 	netdev_features_t dflt_features;
 	netdev_features_t offloads = 0;
 	struct idpf_netdev_priv *np;
 	struct net_device *netdev;
 	u16 idx = vport->idx;
+	struct device *dev;
 	int err;
 
+	dev = idpf_adapter_to_pdev_dev(adapter);
+	caps = idpf_eth_caps(adapter);
 	vport_config = adapter->vport_config[idx];
 
 	/* It's possible we already have a netdev allocated and registered for
@@ -37,7 +88,6 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 		np->vport_idx = vport->idx;
 		np->vport_id = vport->vport_id;
 		vport->netdev = netdev;
-
 		return idpf_init_mac_addr(vport, netdev);
 	}
 
@@ -60,7 +110,6 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 	if (err) {
 		free_netdev(vport->netdev);
 		vport->netdev = NULL;
-
 		return err;
 	}
 
@@ -82,31 +131,35 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 	dflt_features = NETIF_F_SG	|
 			NETIF_F_HIGHDMA;
 
-	if (idpf_is_cap_ena_all(adapter, IDPF_RSS_CAPS, IDPF_CAP_RSS))
+	if (idpf_is_cap_ena_all(caps, IDPF_RSS_CAPS, IDPF_CAP_RSS))
 		dflt_features |= NETIF_F_RXHASH;
-	if (idpf_is_cap_ena_all(adapter, IDPF_CSUM_CAPS, IDPF_CAP_RX_CSUM_L4V4))
+	if (idpf_is_cap_ena_all(caps, IDPF_CSUM_CAPS,
+				IDPF_CAP_RX_CSUM_L4V4))
 		dflt_features |= NETIF_F_IP_CSUM;
-	if (idpf_is_cap_ena_all(adapter, IDPF_CSUM_CAPS, IDPF_CAP_RX_CSUM_L4V6))
+	if (idpf_is_cap_ena_all(caps, IDPF_CSUM_CAPS,
+				IDPF_CAP_RX_CSUM_L4V6))
 		dflt_features |= NETIF_F_IPV6_CSUM;
-	if (idpf_is_cap_ena(adapter, IDPF_CSUM_CAPS, IDPF_CAP_RX_CSUM))
+	if (idpf_is_cap_ena(caps, IDPF_CSUM_CAPS, IDPF_CAP_RX_CSUM))
 		dflt_features |= NETIF_F_RXCSUM;
-	if (idpf_is_cap_ena_all(adapter, IDPF_CSUM_CAPS, IDPF_CAP_SCTP_CSUM))
+	if (idpf_is_cap_ena_all(caps, IDPF_CSUM_CAPS, IDPF_CAP_SCTP_CSUM))
 		dflt_features |= NETIF_F_SCTP_CRC;
 
-	if (idpf_is_cap_ena(adapter, IDPF_SEG_CAPS, VIRTCHNL2_CAP_SEG_IPV4_TCP))
+	if (idpf_is_cap_ena(caps, IDPF_SEG_CAPS,
+			    VIRTCHNL2_CAP_SEG_IPV4_TCP))
 		dflt_features |= NETIF_F_TSO;
-	if (idpf_is_cap_ena(adapter, IDPF_SEG_CAPS, VIRTCHNL2_CAP_SEG_IPV6_TCP))
+	if (idpf_is_cap_ena(caps, IDPF_SEG_CAPS,
+			    VIRTCHNL2_CAP_SEG_IPV6_TCP))
 		dflt_features |= NETIF_F_TSO6;
-	if (idpf_is_cap_ena_all(adapter, IDPF_SEG_CAPS,
+	if (idpf_is_cap_ena_all(caps, IDPF_SEG_CAPS,
 				VIRTCHNL2_CAP_SEG_IPV4_UDP |
 				VIRTCHNL2_CAP_SEG_IPV6_UDP))
 		dflt_features |= NETIF_F_GSO_UDP_L4;
-	if (idpf_is_cap_ena_all(adapter, IDPF_RSC_CAPS, IDPF_CAP_RSC))
+	if (idpf_is_cap_ena_all(caps, IDPF_RSC_CAPS, IDPF_CAP_RSC))
 		offloads |= NETIF_F_GRO_HW;
 	/* advertise to stack only if offloads for encapsulated packets is
 	 * supported
 	 */
-	if (idpf_is_cap_ena(vport->adapter, IDPF_SEG_CAPS,
+	if (idpf_is_cap_ena(caps, IDPF_SEG_CAPS,
 			    VIRTCHNL2_CAP_SEG_TX_SINGLE_TUNNEL)) {
 		offloads |= NETIF_F_GSO_UDP_TUNNEL	|
 			    NETIF_F_GSO_GRE		|
@@ -117,7 +170,7 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 			    NETIF_F_GSO_IPXIP6		|
 			    0;
 
-		if (!idpf_is_cap_ena_all(vport->adapter, IDPF_CSUM_CAPS,
+		if (!idpf_is_cap_ena_all(caps, IDPF_CSUM_CAPS,
 					 IDPF_CAP_TUNNEL_TX_CSUM))
 			netdev->gso_partial_features |=
 				NETIF_F_GSO_UDP_TUNNEL_CSUM;
@@ -125,14 +178,15 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 		netdev->gso_partial_features |= NETIF_F_GSO_GRE_CSUM;
 		offloads |= NETIF_F_TSO_MANGLEID;
 	}
-	if (idpf_is_cap_ena(adapter, IDPF_OTHER_CAPS, VIRTCHNL2_CAP_LOOPBACK))
+	if (idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,
+			    VIRTCHNL2_CAP_LOOPBACK))
 		offloads |= NETIF_F_LOOPBACK;
 
 	netdev->features |= dflt_features;
 	netdev->hw_features |= dflt_features | offloads;
 	netdev->hw_enc_features |= dflt_features | offloads;
 	idpf_set_ethtool_ops(netdev);
-	SET_NETDEV_DEV(netdev, &adapter->pdev->dev);
+	SET_NETDEV_DEV(netdev, dev);
 
 	/* carrier off on init to avoid Tx hangs */
 	netif_carrier_off(netdev);
@@ -144,7 +198,6 @@ int idpf_cfg_netdev(struct idpf_vport *vport)
 	 * netdevs in the adapter struct
 	 */
 	adapter->netdevs[idx] = netdev;
-
 	return 0;
 }
 
@@ -163,10 +216,14 @@ static int idpf_stop(struct net_device *netdev)
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport *vport;
 
-	if (test_bit(IDPF_REMOVE_IN_PROG, np->adapter->flags))
-		return 0;
-
 	idpf_vport_ctrl_lock(netdev);
+
+	if (test_bit(IDPF_ETH_RESET_IN_PROG, np->adapter->flags)) {
+		idpf_vport_ctrl_unlock(netdev);
+
+		return -EBUSY; /* Temporarily busy indication */
+	}
+
 	vport = idpf_netdev_to_vport(netdev);
 
 	idpf_vport_stop(vport);
@@ -182,12 +239,18 @@ static int idpf_stop(struct net_device *netdev)
  */
 void idpf_decfg_netdev(struct idpf_vport *vport)
 {
-	struct idpf_adapter *adapter = vport->adapter;
+	struct idpf_eth_adapter *adapter = vport->adapter;
 
-	unregister_netdev(vport->netdev);
+	/* Check first if netdev is registered earlier */
+	if (test_bit(IDPF_VPORT_REG_NETDEV,
+		     adapter->vport_config[vport->idx]->flags)) {
+		unregister_netdev(vport->netdev);
+		clear_bit(IDPF_VPORT_REG_NETDEV,
+			  adapter->vport_config[vport->idx]->flags);
+	}
+
 	free_netdev(vport->netdev);
 	vport->netdev = NULL;
-
 	adapter->netdevs[vport->idx] = NULL;
 }
 
@@ -267,21 +330,24 @@ static void idpf_set_rx_mode(struct net_device *netdev)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport_user_config_data *config_data;
-	struct idpf_adapter *adapter;
+	struct idpf_eth_idc_auxiliary_dev_caps *caps;
+	struct idpf_eth_adapter *adapter;
 	bool changed = false;
 	struct device *dev;
 	int err;
 
 	adapter = np->adapter;
-	dev = &adapter->pdev->dev;
+	dev = idpf_adapter_to_pdev_dev(adapter);
+	caps = &adapter->dev_info->caps;
 
-	if (idpf_is_cap_ena(adapter, IDPF_OTHER_CAPS,
+	if (idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,
 			    VIRTCHNL2_CAP_MACFILTER)) {
 		__dev_uc_sync(netdev, idpf_addr_sync, idpf_addr_unsync);
 		__dev_mc_sync(netdev, idpf_addr_sync, idpf_addr_unsync);
 	}
 
-	if (!idpf_is_cap_ena(adapter, IDPF_OTHER_CAPS, VIRTCHNL2_CAP_PROMISC))
+	if (!idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,
+			     VIRTCHNL2_CAP_PROMISC))
 		return;
 
 	config_data = &adapter->vport_config[np->vport_idx]->user_config;
@@ -295,8 +361,8 @@ static void idpf_set_rx_mode(struct net_device *netdev)
 	if ((netdev->flags & IFF_PROMISC) &&
 	    !test_and_set_bit(__IDPF_PROMISC_UC, config_data->user_flags)) {
 		changed = true;
-		dev_info(&adapter->pdev->dev, "Entering promiscuous mode\n");
-		if (!test_and_set_bit(__IDPF_PROMISC_MC, adapter->flags))
+		dev_info(dev, "Entering promiscuous mode\n");
+		if (!test_and_set_bit(__IDPF_PROMISC_MC, config_data->user_flags))
 			dev_info(dev, "Entering multicast promiscuous mode\n");
 	}
 
@@ -335,21 +401,24 @@ static int idpf_set_features(struct net_device *netdev,
 			     netdev_features_t features)
 {
 	netdev_features_t changed = netdev->features ^ features;
-	struct idpf_adapter *adapter;
+	struct idpf_netdev_priv *np = netdev_priv(netdev);
+	struct idpf_eth_adapter *adapter;
 	struct idpf_vport *vport;
+	struct device *dev;
 	int err = 0;
 
 	idpf_vport_ctrl_lock(netdev);
-	vport = idpf_netdev_to_vport(netdev);
 
-	adapter = vport->adapter;
-
-	if (idpf_is_reset_in_prog(adapter)) {
-		dev_err(&adapter->pdev->dev, "Device is resetting, changing netdev features temporarily unavailable.\n");
+	adapter = np->adapter;
+	dev = idpf_adapter_to_pdev_dev(adapter);
+	if (test_bit(IDPF_ETH_RESET_IN_PROG, adapter->flags)) {
+		dev_err(dev,
+			"Device is resetting, changing netdev features temporarily unavailable.\n");
 		err = -EBUSY;
 		goto unlock_mutex;
 	}
 
+	vport = idpf_netdev_to_vport(netdev);
 	if (changed & NETIF_F_RXHASH) {
 		netdev->features ^= NETIF_F_RXHASH;
 		err = idpf_vport_manage_rss_lut(vport);
@@ -389,16 +458,20 @@ unlock_mutex:
  */
 static int idpf_open(struct net_device *netdev)
 {
+	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport *vport;
-	int err;
+	int err = 0;
 
 	idpf_vport_ctrl_lock(netdev);
-	vport = idpf_netdev_to_vport(netdev);
+	
+	if (test_bit(IDPF_ETH_RESET_IN_PROG, np->adapter->flags))
+		goto unlock_mutex;
 
+	vport = idpf_netdev_to_vport(netdev);
 	err = idpf_vport_open(vport, true);
 
+unlock_mutex:
 	idpf_vport_ctrl_unlock(netdev);
-
 	return err;
 }
 
@@ -411,18 +484,24 @@ static int idpf_open(struct net_device *netdev)
  */
 static int idpf_change_mtu(struct net_device *netdev, int new_mtu)
 {
+	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport *vport;
 	int err;
 
 	idpf_vport_ctrl_lock(netdev);
-	vport = idpf_netdev_to_vport(netdev);
 
+	if (test_bit(IDPF_ETH_RESET_IN_PROG, np->adapter->flags)) {
+		err = -EBUSY; /* Temporarily busy indication */
+		goto unlock_mutex;
+	}
+
+	vport = idpf_netdev_to_vport(netdev);
 	netdev->mtu = new_mtu;
 
 	err = idpf_initiate_soft_reset(vport, IDPF_SR_MTU_CHANGE);
 
+unlock_mutex:
 	idpf_vport_ctrl_unlock(netdev);
-
 	return err;
 }
 
@@ -437,7 +516,7 @@ static netdev_features_t idpf_features_check(struct sk_buff *skb,
 					     netdev_features_t features)
 {
 	struct idpf_vport *vport = idpf_netdev_to_vport(netdev);
-	struct idpf_adapter *adapter = vport->adapter;
+	struct idpf_eth_adapter *adapter = vport->adapter;
 	size_t len;
 
 	/* No point in doing any of this if neither checksum nor GSO are
@@ -460,7 +539,7 @@ static netdev_features_t idpf_features_check(struct sk_buff *skb,
 		goto unsupported;
 
 	len = skb_network_header_len(skb);
-	if (unlikely(len > idpf_get_max_tx_hdr_size(adapter)))
+	if (unlikely(len > idpf_eth_get_max_tx_hdr_size(adapter)))
 		goto unsupported;
 
 	if (!skb->encapsulation)
@@ -473,7 +552,7 @@ static netdev_features_t idpf_features_check(struct sk_buff *skb,
 
 	/* IPLEN can support at most 127 dwords */
 	len = skb_inner_network_header_len(skb);
-	if (unlikely(len > idpf_get_max_tx_hdr_size(adapter)))
+	if (unlikely(len > idpf_eth_get_max_tx_hdr_size(adapter)))
 		goto unsupported;
 
 	/* No need to validate L4LEN as TCP is the only protocol with a
@@ -497,23 +576,33 @@ unsupported:
 static int idpf_set_mac(struct net_device *netdev, void *p)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
+	struct idpf_eth_idc_auxiliary_dev_caps *caps;
 	struct idpf_vport_config *vport_config;
 	struct sockaddr *addr = p;
 	struct idpf_vport *vport;
+	struct device *dev;
 	int err = 0;
 
 	idpf_vport_ctrl_lock(netdev);
-	vport = idpf_netdev_to_vport(netdev);
 
-	if (!idpf_is_cap_ena(vport->adapter, IDPF_OTHER_CAPS,
+	if (test_bit(IDPF_ETH_RESET_IN_PROG, np->adapter->flags)) {
+		err = -EBUSY; /* Temporarily busy indication */
+		goto unlock_mutex;
+	}
+
+	vport = idpf_netdev_to_vport(netdev);
+	dev = idpf_adapter_to_pdev_dev(vport->adapter);
+	caps = idpf_eth_caps(vport->adapter);
+
+	if (!idpf_is_cap_ena(caps, IDPF_OTHER_CAPS,
 			     VIRTCHNL2_CAP_MACFILTER)) {
-		dev_info(&vport->adapter->pdev->dev, "Setting MAC address is not supported\n");
+		dev_info(dev, "Setting MAC address is not supported\n");
 		err = -EOPNOTSUPP;
 		goto unlock_mutex;
 	}
 
 	if (!is_valid_ether_addr(addr->sa_data)) {
-		dev_info(&vport->adapter->pdev->dev, "Invalid MAC address: %pM\n",
+		dev_info(dev, "Invalid MAC address: %pM\n",
 			 addr->sa_data);
 		err = -EADDRNOTAVAIL;
 		goto unlock_mutex;

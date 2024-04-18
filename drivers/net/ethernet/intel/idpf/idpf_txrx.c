@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
-#include "idpf.h"
+#include "idpf_eth.h"
+#include "idpf_controlq.h"
 #include "idpf_netdev.h"
-#include "idpf_virtchnl.h"
 
 /**
  * idpf_buf_lifo_push - push a buffer pointer onto stack
@@ -33,27 +33,6 @@ static struct idpf_tx_stash *idpf_buf_lifo_pop(struct idpf_buf_lifo *stack)
 		return NULL;
 
 	return stack->bufs[--stack->top];
-}
-
-/**
- * idpf_tx_timeout - Respond to a Tx Hang
- * @netdev: network interface device structure
- * @txqueue: TX queue
- */
-void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue)
-{
-	struct idpf_adapter *adapter = idpf_netdev_to_adapter(netdev);
-
-	adapter->tx_timeout_count++;
-
-	netdev_err(netdev, "Detected Tx timeout: Count %d, Queue %d\n",
-		   adapter->tx_timeout_count, txqueue);
-	if (!idpf_is_reset_in_prog(adapter)) {
-		set_bit(IDPF_HR_FUNC_RESET, adapter->flags);
-		queue_delayed_work(adapter->vc_event_wq,
-				   &adapter->vc_event_task,
-				   msecs_to_jiffies(10));
-	}
 }
 
 /**
@@ -245,21 +224,6 @@ static void idpf_rx_page_rel(struct idpf_queue *rxq, struct idpf_rx_buf *rx_buf)
 }
 
 /**
- * idpf_rx_hdr_buf_rel_all - Release header buffer memory
- * @rxq: queue to use
- */
-static void idpf_rx_hdr_buf_rel_all(struct idpf_queue *rxq)
-{
-	struct idpf_adapter *adapter = rxq->vport->adapter;
-
-	dma_free_coherent(&adapter->pdev->dev,
-			  rxq->desc_count * IDPF_HDR_BUF_SIZE,
-			  rxq->rx_buf.hdr_buf_va,
-			  rxq->rx_buf.hdr_buf_pa);
-	rxq->rx_buf.hdr_buf_va = NULL;
-}
-
-/**
  * idpf_rx_buf_rel_all - Free all Rx buffer resources for a queue
  * @rxq: queue to be cleaned
  */
@@ -330,27 +294,6 @@ void idpf_rx_buf_hw_update(struct idpf_queue *rxq, u32 val)
 
 	/* writel has an implicit memory barrier */
 	writel(val, rxq->tail);
-}
-
-/**
- * idpf_rx_hdr_buf_alloc_all - Allocate memory for header buffers
- * @rxq: ring to use
- *
- * Returns 0 on success, negative on failure.
- */
-static int idpf_rx_hdr_buf_alloc_all(struct idpf_queue *rxq)
-{
-	struct idpf_adapter *adapter = rxq->vport->adapter;
-
-	rxq->rx_buf.hdr_buf_va =
-		dma_alloc_coherent(&adapter->pdev->dev,
-				   IDPF_HDR_BUF_SIZE * rxq->desc_count,
-				   &rxq->rx_buf.hdr_buf_pa,
-				   GFP_KERNEL);
-	if (!rxq->rx_buf.hdr_buf_va)
-		return -ENOMEM;
-
-	return 0;
 }
 
 /**
@@ -972,8 +915,7 @@ static bool idpf_tx_clean_complq(struct idpf_queue *complq, int budget,
 					   IDPF_TXD_COMPLQ_QID_M);
 		if (rel_tx_qid >= complq->txq_grp->num_txq ||
 		    !complq->txq_grp->txqs[rel_tx_qid]) {
-			dev_err(&complq->vport->adapter->pdev->dev,
-				"TxQ not found\n");
+			dev_err(complq->dev, "TxQ not found\n");
 			goto fetch_next_desc;
 		}
 		tx_q = complq->txq_grp->txqs[rel_tx_qid];
@@ -996,8 +938,7 @@ static bool idpf_tx_clean_complq(struct idpf_queue *complq, int budget,
 			idpf_tx_handle_sw_marker(tx_q);
 			break;
 		default:
-			dev_err(&tx_q->vport->adapter->pdev->dev,
-				"Unknown TX completion type: %d\n",
+			dev_err(tx_q->dev, "Unknown TX completion type: %d\n",
 				ctype);
 			goto fetch_next_desc;
 		}

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
 #ifndef _IDPF_NETDEV_H_
 #define _IDPF_NETDEV_H_
@@ -15,7 +15,7 @@
  * @stats_lock: Lock to protect stats update
  */
 struct idpf_netdev_priv {
-	struct idpf_adapter *adapter;
+	struct idpf_eth_adapter *adapter;
 	struct idpf_vport *vport;
 	u32 vport_id;
 	u16 vport_idx;
@@ -39,8 +39,8 @@ static inline struct idpf_vport *idpf_netdev_to_vport(struct net_device *netdev)
  * idpf_netdev_to_adapter - Get adapter handle from a netdev
  * @netdev: Network interface device structure
  */
-static
-inline struct idpf_adapter *idpf_netdev_to_adapter(struct net_device *netdev)
+static inline
+struct idpf_eth_adapter *idpf_netdev_to_adapter(struct net_device *netdev)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
 
@@ -72,7 +72,11 @@ static inline void idpf_vport_ctrl_unlock(struct net_device *netdev)
 	mutex_unlock(&np->adapter->vport_ctrl_lock);
 }
 
+void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue);
+
 int idpf_cfg_netdev(struct idpf_vport *vport);
 void idpf_decfg_netdev(struct idpf_vport *vport);
+void idpf_netdev_stop_all(struct idpf_eth_adapter *adapter);
+void idpf_set_ethtool_ops(struct net_device *netdev);
 
 #endif /* _IDPF_NETDEV_H_ */

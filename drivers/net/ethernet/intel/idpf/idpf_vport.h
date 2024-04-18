@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
 #ifndef _IDPF_VPORT_H_
 #define _IDPF_VPORT_H_
@@ -56,6 +56,35 @@ struct idpf_vport_max_q;
 	VIRTCHNL2_CAP_TX_CSUM_L4_SINGLE_TUNNEL)
 
 /**
+ * enum idpf_vport_reset_cause - Vport soft reset causes
+ * @IDPF_SR_Q_CHANGE: Soft reset queue change
+ * @IDPF_SR_Q_DESC_CHANGE: Soft reset descriptor change
+ * @IDPF_SR_MTU_CHANGE: Soft reset MTU change
+ * @IDPF_SR_RSC_CHANGE: Soft reset RSC change
+ */
+enum idpf_vport_reset_cause {
+	IDPF_SR_Q_CHANGE,
+	IDPF_SR_Q_DESC_CHANGE,
+	IDPF_SR_MTU_CHANGE,
+	IDPF_SR_RSC_CHANGE,
+};
+
+/**
+ * enum idpf_user_flags
+ * @__IDPF_USER_FLAG_HSPLIT: header split state
+ * @__IDPF_PROMISC_UC: Unicast promiscuous mode
+ * @__IDPF_PROMISC_MC: Multicast promiscuous mode
+ * @__IDPF_USER_FLAGS_NBITS: Must be last
+ */
+enum idpf_user_flags {
+	__IDPF_USER_FLAG_HSPLIT = 0U,
+	__IDPF_PROMISC_UC = 32,
+	__IDPF_PROMISC_MC,
+
+	__IDPF_USER_FLAGS_NBITS,
+};
+
+/**
  * enum idpf_vport_state - Current vport state
  * @__IDPF_VPORT_DOWN: Vport is down
  * @__IDPF_VPORT_UP: Vport is up
@@ -65,20 +94,6 @@ enum idpf_vport_state {
 	__IDPF_VPORT_DOWN,
 	__IDPF_VPORT_UP,
 	__IDPF_VPORT_STATE_LAST,
-};
-
-/**
- * struct idpf_vport_max_q - Queue limits
- * @max_rxq: Maximum number of RX queues supported
- * @max_txq: Maixmum number of TX queues supported
- * @max_bufq: In splitq, maximum number of buffer queues supported
- * @max_complq: In splitq, maximum number of completion queues supported
- */
-struct idpf_vport_max_q {
-	u16 max_rxq;
-	u16 max_txq;
-	u16 max_bufq;
-	u16 max_complq;
 };
 
 /**
@@ -105,21 +120,6 @@ struct idpf_port_stats {
 	u64_stats_t tx_drops;
 	u64_stats_t tx_dma_map_errs;
 	struct virtchnl2_vport_stats vport_stats;
-};
-
-/**
- * enum idpf_user_flags
- * @__IDPF_USER_FLAG_HSPLIT: header split state
- * @__IDPF_PROMISC_UC: Unicast promiscuous mode
- * @__IDPF_PROMISC_MC: Multicast promiscuous mode
- * @__IDPF_USER_FLAGS_NBITS: Must be last
- */
-enum idpf_user_flags {
-	__IDPF_USER_FLAG_HSPLIT = 0U,
-	__IDPF_PROMISC_UC = 32,
-	__IDPF_PROMISC_MC,
-
-	__IDPF_USER_FLAGS_NBITS,
 };
 
 /**
@@ -176,22 +176,6 @@ enum idpf_vport_config_flags {
 };
 
 /**
- * struct idpf_avail_queue_info
- * @avail_rxq: Available RX queues
- * @avail_txq: Available TX queues
- * @avail_bufq: Available buffer queues
- * @avail_complq: Available completion queues
- *
- * Maintain total queues available after allocating max queues to each vport.
- */
-struct idpf_avail_queue_info {
-	u16 avail_rxq;
-	u16 avail_txq;
-	u16 avail_bufq;
-	u16 avail_complq;
-};
-
-/**
  * struct idpf_vport_config - Vport configuration data
  * @user_config: see struct idpf_vport_user_config_data
  * @max_q: Maximum possible queues
@@ -201,7 +185,7 @@ struct idpf_avail_queue_info {
  */
 struct idpf_vport_config {
 	struct idpf_vport_user_config_data user_config;
-	struct idpf_vport_max_q max_q;
+	struct idpf_max_q max_q;
 	struct virtchnl2_add_queues *req_qs_chunks;
 	spinlock_t mac_filter_list_lock;
 	DECLARE_BITMAP(flags, IDPF_VPORT_CONFIG_FLAGS_NBITS);
@@ -254,6 +238,7 @@ struct idpf_vport_config {
  * @sw_marker_wq: workqueue for marker packets
  */
 struct idpf_vport {
+	struct msix_entry *msix_table;
 	u16 num_txq;
 	u16 num_complq;
 	u32 txq_desc_count;
@@ -276,7 +261,7 @@ struct idpf_vport {
 	u32 rxq_model;
 	struct idpf_rx_ptype_decoded rx_ptype_lkup[IDPF_RX_MAX_PTYPE];
 
-	struct idpf_adapter *adapter;
+	struct idpf_eth_adapter *adapter;
 	struct net_device *netdev;
 	DECLARE_BITMAP(flags, IDPF_VPORT_FLAGS_NBITS);
 	u16 vport_type;
@@ -327,34 +312,30 @@ static inline bool idpf_is_feature_ena(const struct idpf_vport *vport,
 void idpf_vport_stop(struct idpf_vport *vport);
 int idpf_vport_open(struct idpf_vport *vport, bool alloc_res);
 void idpf_vport_rel(struct idpf_vport *vport);
-void idpf_vport_dealloc(struct idpf_vport *vport);
+void idpf_vport_dealloc(struct idpf_vport *vport, bool is_lock_acquired);
 u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
 bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
 int idpf_send_get_set_rss_key_msg(struct idpf_vport *vport, bool get);
 int idpf_send_get_set_rss_lut_msg(struct idpf_vport *vport, bool get);
-struct idpf_vport *idpf_vport_alloc(struct idpf_adapter *adapter,
-				    struct idpf_vport_max_q *max_q);
-void idpf_vport_init(struct idpf_vport *vport, struct idpf_vport_max_q *max_q);
-void idpf_set_vport_state(struct idpf_adapter *adapter);
+struct idpf_vport *idpf_vport_alloc(struct idpf_eth_adapter *adapter,
+				    struct idpf_max_q *max_q);
+int idpf_vport_init(struct idpf_vport *vport, struct idpf_max_q *max_q);
+void idpf_set_vport_state(struct idpf_eth_adapter *adapter);
 int idpf_initiate_soft_reset(struct idpf_vport *vport,
 			     enum idpf_vport_reset_cause reset_cause);
-void idpf_handle_event_link(struct idpf_adapter *adapter,
-			    const struct virtchnl2_event *v2e);
-struct idpf_vport *idpf_vid_to_vport(struct idpf_adapter *adapter, u32 v_id);
-int idpf_vport_alloc_max_qs(struct idpf_adapter *adapter,
-			    struct idpf_vport_max_q *max_q);
-void idpf_vport_dealloc_max_qs(struct idpf_adapter *adapter,
-			       struct idpf_vport_max_q *max_q);
+void idpf_handle_event_link(struct idpf_eth_adapter *adapter,
+			     const struct virtchnl2_event *v2e);
+struct idpf_vport *idpf_vid_to_vport(struct idpf_eth_adapter *adapter,
+				     u32 v_id);
 int idpf_vport_adjust_qs(struct idpf_vport *vport);
-
 int idpf_send_delete_queues_msg(struct idpf_vport *vport);
 int idpf_send_enable_queues_msg(struct idpf_vport *vport);
 int idpf_send_disable_queues_msg(struct idpf_vport *vport);
 int idpf_send_config_queues_msg(struct idpf_vport *vport);
 
 u32 idpf_get_vport_id(struct idpf_vport *vport);
-int idpf_send_create_vport_msg(struct idpf_adapter *adapter,
-			       struct idpf_vport_max_q *max_q);
+int idpf_send_create_vport_msg(struct idpf_eth_adapter *adapter,
+			       struct idpf_max_q *max_q);
 int idpf_send_destroy_vport_msg(struct idpf_vport *vport);
 int idpf_send_enable_vport_msg(struct idpf_vport *vport);
 int idpf_send_disable_vport_msg(struct idpf_vport *vport);
@@ -370,5 +351,12 @@ int idpf_queue_reg_init(struct idpf_vport *vport);
 int idpf_vport_queue_ids_init(struct idpf_vport *vport);
 int idpf_vport_manage_rss_lut(struct idpf_vport *vport);
 int idpf_send_ena_dis_loopback_msg(struct idpf_vport *vport);
+int idpf_vport_calc_total_qs(struct idpf_eth_adapter *adapter, u16 vport_index,
+			     struct virtchnl2_create_vport *vport_msg,
+			     struct idpf_max_q *max_q);
+void idpf_vport_intr_write_itr(struct idpf_q_vector *q_vector,
+			       u16 itr, bool tx);
+u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
+bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
 
 #endif /* !_IDPF_VPORT_H_ */

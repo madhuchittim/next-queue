@@ -3,7 +3,6 @@
 
 #include "idpf.h"
 #include "idpf_lan_vf_regs.h"
-#include "idpf_virtchnl.h"
 
 #define IDPF_VF_ITR_IDX_SPACING		0x40
 
@@ -54,6 +53,7 @@ static void idpf_vf_ctlq_reg_init(struct idpf_ctlq_create_info *cq)
 static void idpf_vf_mb_intr_reg_init(struct idpf_adapter *adapter)
 {
 	struct idpf_intr_reg *intr = &adapter->mb_vector.intr_reg;
+
 	u32 dyn_ctl = le32_to_cpu(adapter->caps.mailbox_dyn_ctl);
 
 	intr->dyn_ctl = idpf_get_reg_addr(adapter, dyn_ctl);
@@ -65,32 +65,34 @@ static void idpf_vf_mb_intr_reg_init(struct idpf_adapter *adapter)
 
 /**
  * idpf_vf_intr_reg_init - Initialize interrupt registers
- * @vport: virtual port structure
+ * @adapter: Adapter data structure
+ * @num_vecs: Number of vectors
+ * @q_vectors: Queue vectors
+ * @q_vector_idxs: Queue vector index
  */
-static int idpf_vf_intr_reg_init(struct idpf_vport *vport)
+int idpf_vf_intr_reg_init(struct idpf_adapter *adapter, u16 num_vecs,
+			  struct idpf_q_vector *q_vectors, u16 *q_vector_idxs)
 {
-	struct idpf_adapter *adapter = vport->adapter;
-	int num_vecs = vport->num_q_vectors;
 	struct idpf_vec_regs *reg_vals;
 	int num_regs, i, err = 0;
 	u32 rx_itr, tx_itr;
 	u16 total_vecs;
 
-	total_vecs = idpf_get_reserved_vecs(vport->adapter);
+	total_vecs = idpf_get_reserved_vecs(adapter);
 	reg_vals = kcalloc(total_vecs, sizeof(struct idpf_vec_regs),
 			   GFP_KERNEL);
 	if (!reg_vals)
 		return -ENOMEM;
 
-	num_regs = idpf_get_reg_intr_vecs(vport, reg_vals);
+	num_regs = idpf_get_reg_intr_vecs(adapter, reg_vals);
 	if (num_regs < num_vecs) {
 		err = -EINVAL;
 		goto free_reg_vals;
 	}
 
 	for (i = 0; i < num_vecs; i++) {
-		struct idpf_q_vector *q_vector = &vport->q_vectors[i];
-		u16 vec_id = vport->q_vector_idxs[i] - IDPF_MBX_Q_VEC;
+		struct idpf_q_vector *q_vector = &q_vectors[i];
+		u16 vec_id = q_vector_idxs[i] - IDPF_MBX_Q_VEC;
 		struct idpf_intr_reg *intr = &q_vector->intr_reg;
 		u32 spacing;
 
@@ -137,7 +139,7 @@ static void idpf_vf_trigger_reset(struct idpf_adapter *adapter,
 {
 	/* Do not send VIRTCHNL2_OP_RESET_VF message on driver unload */
 	if (trig_cause == IDPF_HR_FUNC_RESET &&
-	    !test_bit(IDPF_REMOVE_IN_PROG, adapter->flags))
+	    !test_bit(IDPF_REMOVE_IN_PROG, idpf_adapter_flags(adapter)))
 		idpf_send_mb_msg(adapter, VIRTCHNL2_OP_RESET_VF, 0, NULL, 0);
 }
 

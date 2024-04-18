@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
-#include "idpf.h"
+#include "idpf_eth.h"
+#include "idpf_controlq.h"
 #include "idpf_netdev.h"
 #include "idpf_fltr.h"
-#include "idpf_virtchnl.h"
 
 /**
  * idpf_find_mac_filter - Search filter list for specific mac filter
@@ -264,22 +264,22 @@ int idpf_init_mac_addr(struct idpf_vport *vport,
 		       struct net_device *netdev)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
-	struct idpf_adapter *adapter = vport->adapter;
+	struct idpf_eth_adapter *adapter = vport->adapter;
+	struct device *dev;
 	int err;
 
+	dev = idpf_adapter_to_pdev_dev(adapter);
 	if (is_valid_ether_addr(vport->default_mac_addr)) {
 		eth_hw_addr_set(netdev, vport->default_mac_addr);
 		ether_addr_copy(netdev->perm_addr, vport->default_mac_addr);
-
 		return idpf_add_mac_filter(vport, np, vport->default_mac_addr,
 					   false);
 	}
 
-	if (!idpf_is_cap_ena(adapter, IDPF_OTHER_CAPS,
+	if (!idpf_is_cap_ena(idpf_eth_caps(adapter), IDPF_OTHER_CAPS,
 			     VIRTCHNL2_CAP_MACFILTER)) {
-		dev_err(&adapter->pdev->dev,
+		dev_err(dev,
 			"MAC address is not provided and capability is not set\n");
-
 		return -EINVAL;
 	}
 
@@ -288,16 +288,16 @@ int idpf_init_mac_addr(struct idpf_vport *vport,
 	if (err)
 		return err;
 
-	dev_info(&adapter->pdev->dev, "Invalid MAC address %pM, using random %pM\n",
+	dev_info(dev,
+		 "Invalid MAC address %pM, using random %pM\n",
 		 vport->default_mac_addr, netdev->dev_addr);
 	ether_addr_copy(vport->default_mac_addr, netdev->dev_addr);
-
 	return 0;
 }
 
 /**
  * idpf_mac_filter_async_handler - Async callback for mac filters
- * @adapter: private data struct
+ * @async_ctx: callback context
  * @xn: transaction for message
  * @ctlq_msg: received message
  *
@@ -307,19 +307,23 @@ int idpf_init_mac_addr(struct idpf_vport *vport,
  * ultimately do is remove it from our list of mac filters and report the
  * error.
  */
-static int idpf_mac_filter_async_handler(struct idpf_adapter *adapter,
+static int idpf_mac_filter_async_handler(void *async_ctx,
 					 struct idpf_vc_xn *xn,
 					 const struct idpf_ctlq_msg *ctlq_msg)
 {
 	struct virtchnl2_mac_addr_list *ma_list;
 	struct idpf_vport_config *vport_config;
 	struct virtchnl2_mac_addr *mac_addr;
+	struct idpf_eth_adapter *adapter;
 	struct idpf_mac_filter *f, *tmp;
 	struct list_head *ma_list_head;
 	struct idpf_vport *vport;
+	struct device *dev;
 	u16 num_entries;
 	int i;
 
+	adapter = (struct idpf_eth_adapter *)async_ctx;
+	dev = idpf_adapter_to_pdev_dev(adapter);
 	/* if success we're done, we're only here if something bad happened */
 	if (!ctlq_msg->cookie.mbx.chnl_retval)
 		return 0;
@@ -352,13 +356,15 @@ static int idpf_mac_filter_async_handler(struct idpf_adapter *adapter,
 			if (ether_addr_equal(mac_addr[i].addr, f->macaddr))
 				list_del(&f->list);
 	spin_unlock_bh(&vport_config->mac_filter_list_lock);
-	dev_err_ratelimited(&adapter->pdev->dev, "Received error sending MAC filter request (op %d)\n",
+	dev_err_ratelimited(dev,
+			    "Received error sending MAC filter request (op %d)\n",
 			    xn->vc_op);
 
 	return 0;
 
 invalid_payload:
-	dev_err_ratelimited(&adapter->pdev->dev, "Received invalid MAC filter payload (op %d) (len %zd)\n",
+	dev_err_ratelimited(dev,
+			    "Received invalid MAC filter payload (op %d) (len %zd)\n",
 			    xn->vc_op, xn->reply_sz);
 
 	return -EINVAL;
@@ -379,19 +385,22 @@ int idpf_add_del_mac_filters(struct idpf_vport *vport,
 {
 	struct virtchnl2_mac_addr_list *ma_list __free(kfree) = NULL;
 	struct virtchnl2_mac_addr *mac_addr __free(kfree) = NULL;
-	struct idpf_adapter *adapter = np->adapter;
+	struct idpf_eth_adapter *adapter = np->adapter;
 	struct idpf_vc_xn_params xn_params = {};
 	struct idpf_vport_config *vport_config;
+	struct idpf_eth_idc_dev_info *dev_info;
 	u32 num_msgs, total_filters = 0;
 	struct idpf_mac_filter *f;
 	ssize_t reply_sz;
 	int i = 0, k;
 
+	dev_info = adapter->dev_info;
 	xn_params.vc_op = add ? VIRTCHNL2_OP_ADD_MAC_ADDR :
 				VIRTCHNL2_OP_DEL_MAC_ADDR;
 	xn_params.timeout_ms = IDPF_VC_XN_DEFAULT_TIMEOUT_MSEC;
 	xn_params.async = async;
 	xn_params.async_handler = idpf_mac_filter_async_handler;
+	xn_params.async_ctx = adapter;
 
 	vport_config = adapter->vport_config[np->vport_idx];
 	spin_lock_bh(&vport_config->mac_filter_list_lock);
@@ -468,7 +477,8 @@ int idpf_add_del_mac_filters(struct idpf_vport *vport,
 
 		xn_params.send_buf.iov_base = ma_list;
 		xn_params.send_buf.iov_len = buf_size;
-		reply_sz = idpf_vc_xn_exec(adapter, &xn_params);
+		reply_sz = idpf_eth_idc(adapter).virtchnl_send(dev_info,
+							       &xn_params);
 		if (reply_sz < 0)
 			return reply_sz;
 
@@ -489,7 +499,7 @@ int idpf_add_del_mac_filters(struct idpf_vport *vport,
  * asynchronously and won't wait for response.  Returns 0 on success, negative
  * on failure;
  */
-int idpf_set_promiscuous(struct idpf_adapter *adapter,
+int idpf_set_promiscuous(struct idpf_eth_adapter *adapter,
 			 struct idpf_vport_user_config_data *config_data,
 			 u32 vport_id)
 {
@@ -512,7 +522,8 @@ int idpf_set_promiscuous(struct idpf_adapter *adapter,
 	xn_params.send_buf.iov_len = sizeof(vpi);
 	/* setting promiscuous is only ever done asynchronously */
 	xn_params.async = true;
-	reply_sz = idpf_vc_xn_exec(adapter, &xn_params);
+	reply_sz = idpf_eth_idc(adapter).virtchnl_send(adapter->dev_info,
+						       &xn_params);
 
 	return reply_sz < 0 ? reply_sz : 0;
 }

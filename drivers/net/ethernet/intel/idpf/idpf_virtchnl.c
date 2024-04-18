@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (C) 2024 Intel Corporation */
+/* Copyright (C) 2023 Intel Corporation */
 
 #include "idpf.h"
-#include "idpf_netdev.h"
-#include "idpf_virtchnl.h"
 
 /**
  * idpf_recv_event_msg - Receive virtchnl event message
@@ -20,7 +18,8 @@ static void idpf_recv_event_msg(struct idpf_adapter *adapter,
 	u32 event;
 
 	if (payload_size < sizeof(*v2e)) {
-		dev_err_ratelimited(&adapter->pdev->dev, "Failed to receive valid payload for event msg (op %d len %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Failed to receive valid payload for event msg (op %d len %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode,
 				    payload_size);
 		return;
@@ -31,7 +30,10 @@ static void idpf_recv_event_msg(struct idpf_adapter *adapter,
 
 	switch (event) {
 	case VIRTCHNL2_EVENT_LINK_CHANGE:
-		idpf_handle_event_link(adapter, v2e);
+		idpf_eth_idc_dispatch_event(adapter,
+					    IDPF_ETH_IDC_EVENT_SINGLE_VPORT,
+					    IDPF_ETH_IDC_EVENT_LINK_CHANGE,
+					    v2e);
 		return;
 	default:
 		dev_err(&adapter->pdev->dev,
@@ -68,7 +70,8 @@ static int idpf_mb_clean(struct idpf_adapter *adapter)
 			continue;
 		dma_mem = q_msg[i]->ctx.indirect.payload;
 		if (dma_mem)
-			dma_free_coherent(&adapter->pdev->dev, dma_mem->size,
+			dma_free_coherent(&adapter->pdev->dev,
+					  dma_mem->size,
 					  dma_mem->va, dma_mem->pa);
 		kfree(q_msg[i]);
 		kfree(dma_mem);
@@ -127,7 +130,8 @@ int idpf_send_mb_msg(struct idpf_adapter *adapter, u32 op,
 	ctlq_msg->cookie.mbx.chnl_opcode = op;
 	ctlq_msg->cookie.mbx.chnl_retval = 0;
 	dma_mem->size = IDPF_CTLQ_MAX_BUF_LEN;
-	dma_mem->va = dma_alloc_coherent(&adapter->pdev->dev, dma_mem->size,
+	dma_mem->va = dma_alloc_coherent(&adapter->pdev->dev,
+					 dma_mem->size,
 					 &dma_mem->pa, GFP_ATOMIC);
 	if (!dma_mem->va) {
 		err = -ENOMEM;
@@ -147,7 +151,8 @@ int idpf_send_mb_msg(struct idpf_adapter *adapter, u32 op,
 	return 0;
 
 send_error:
-	dma_free_coherent(&adapter->pdev->dev, dma_mem->size, dma_mem->va,
+	dma_free_coherent(&adapter->pdev->dev,
+			  dma_mem->size, dma_mem->va,
 			  dma_mem->pa);
 dma_alloc_error:
 	kfree(dma_mem);
@@ -221,7 +226,7 @@ static void idpf_vc_xn_init(struct idpf_vc_xn_manager *vcxn_mngr)
  * All waiting threads will be woken-up and their transaction aborted. Further
  * operations on that object will fail.
  */
-static void idpf_vc_xn_shutdown(struct idpf_vc_xn_manager *vcxn_mngr)
+void idpf_vc_xn_shutdown(struct idpf_vc_xn_manager *vcxn_mngr)
 {
 	int i;
 
@@ -329,6 +334,7 @@ ssize_t idpf_vc_xn_exec(struct idpf_adapter *adapter,
 	xn->state = params->async ? IDPF_VC_XN_ASYNC : IDPF_VC_XN_WAITING;
 	xn->vc_op = params->vc_op;
 	xn->async_handler = params->async_handler;
+	xn->async_ctx = params->async_ctx;
 	idpf_vc_xn_unlock(xn);
 
 	if (!params->async)
@@ -362,7 +368,8 @@ ssize_t idpf_vc_xn_exec(struct idpf_adapter *adapter,
 		retval = -ENXIO;
 		goto only_unlock;
 	case IDPF_VC_XN_WAITING:
-		dev_notice_ratelimited(&adapter->pdev->dev, "Transaction timed-out (op %d, %dms)\n",
+		dev_notice_ratelimited(&adapter->pdev->dev,
+				       "Transaction timed-out (op %d, %dms)\n",
 				       params->vc_op, params->timeout_ms);
 		retval = -ETIME;
 		break;
@@ -370,7 +377,8 @@ ssize_t idpf_vc_xn_exec(struct idpf_adapter *adapter,
 		retval = xn->reply_sz;
 		break;
 	case IDPF_VC_XN_COMPLETED_FAILED:
-		dev_notice_ratelimited(&adapter->pdev->dev, "Transaction failed (op %d)\n",
+		dev_notice_ratelimited(&adapter->pdev->dev,
+				       "Transaction failed (op %d)\n",
 				       params->vc_op);
 		retval = -EIO;
 		break;
@@ -407,7 +415,8 @@ idpf_vc_xn_forward_async(struct idpf_adapter *adapter, struct idpf_vc_xn *xn,
 	int err = 0;
 
 	if (ctlq_msg->cookie.mbx.chnl_opcode != xn->vc_op) {
-		dev_err_ratelimited(&adapter->pdev->dev, "Async message opcode does not match transaction opcode (msg: %d) (xn: %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Async message opcode does not match transaction opcode (msg: %d) (xn: %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode, xn->vc_op);
 		xn->reply_sz = 0;
 		err = -EINVAL;
@@ -415,13 +424,14 @@ idpf_vc_xn_forward_async(struct idpf_adapter *adapter, struct idpf_vc_xn *xn,
 	}
 
 	if (xn->async_handler) {
-		err = xn->async_handler(adapter, xn, ctlq_msg);
+		err = xn->async_handler(xn->async_ctx, xn, ctlq_msg);
 		goto release_bufs;
 	}
 
 	if (ctlq_msg->cookie.mbx.chnl_retval) {
 		xn->reply_sz = 0;
-		dev_err_ratelimited(&adapter->pdev->dev, "Async message failure (op %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Async message failure (op %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode);
 		err = -EINVAL;
 	}
@@ -452,14 +462,16 @@ idpf_vc_xn_forward_reply(struct idpf_adapter *adapter,
 	msg_info = ctlq_msg->ctx.sw_cookie.data;
 	xn_idx = FIELD_GET(IDPF_VC_XN_IDX_M, msg_info);
 	if (xn_idx >= ARRAY_SIZE(adapter->vcxn_mngr->ring)) {
-		dev_err_ratelimited(&adapter->pdev->dev, "Out of bounds cookie received: %02x\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Out of bounds cookie received: %02x\n",
 				    xn_idx);
 		return -EINVAL;
 	}
 	xn = &adapter->vcxn_mngr->ring[xn_idx];
 	salt = FIELD_GET(IDPF_VC_XN_SALT_M, msg_info);
 	if (xn->salt != salt) {
-		dev_err_ratelimited(&adapter->pdev->dev, "Transaction salt does not match (%02x != %02x)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Transaction salt does not match (%02x != %02x)\n",
 				    xn->salt, salt);
 		return -EINVAL;
 	}
@@ -470,7 +482,8 @@ idpf_vc_xn_forward_reply(struct idpf_adapter *adapter,
 		/* success */
 		break;
 	case IDPF_VC_XN_IDLE:
-		dev_err_ratelimited(&adapter->pdev->dev, "Unexpected or belated VC reply (op %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Unexpected or belated VC reply (op %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode);
 		err = -EINVAL;
 		goto out_unlock;
@@ -487,14 +500,16 @@ idpf_vc_xn_forward_reply(struct idpf_adapter *adapter,
 		idpf_vc_xn_unlock(xn);
 		return err;
 	default:
-		dev_err_ratelimited(&adapter->pdev->dev, "Overwriting VC reply (op %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Overwriting VC reply (op %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode);
 		err = -EBUSY;
 		goto out_unlock;
 	}
 
 	if (ctlq_msg->cookie.mbx.chnl_opcode != xn->vc_op) {
-		dev_err_ratelimited(&adapter->pdev->dev, "Message opcode does not match transaction opcode (msg: %d) (xn: %d)\n",
+		dev_err_ratelimited(&adapter->pdev->dev,
+				    "Message opcode does not match transaction opcode (msg: %d) (xn: %d)\n",
 				    ctlq_msg->cookie.mbx.chnl_opcode, xn->vc_op);
 		xn->reply_sz = 0;
 		xn->state = IDPF_VC_XN_COMPLETED_FAILED;
@@ -623,13 +638,15 @@ static int idpf_send_ver_msg(struct idpf_adapter *adapter)
 	minor = le32_to_cpu(vvi.minor);
 
 	if (major > IDPF_VIRTCHNL_VERSION_MAJOR) {
-		dev_warn(&adapter->pdev->dev, "Virtchnl major version greater than supported\n");
+		dev_warn(&adapter->pdev->dev,
+			 "Virtchnl major version greater than supported\n");
 		return -EINVAL;
 	}
 
 	if (major == IDPF_VIRTCHNL_VERSION_MAJOR &&
 	    minor > IDPF_VIRTCHNL_VERSION_MINOR)
-		dev_warn(&adapter->pdev->dev, "Virtchnl minor version didn't match\n");
+		dev_warn(&adapter->pdev->dev,
+			 "Virtchnl minor version didn't match\n");
 
 	/* If we have a mismatch, resend version to update receiver on what
 	 * version we will use.
@@ -730,23 +747,25 @@ static int idpf_send_get_caps_msg(struct idpf_adapter *adapter)
 }
 
 /**
- * idpf_vport_alloc_max_qs - Allocate max queues for a vport
+ * idpf_alloc_max_qs - Allocate max queues for a vport
  * @adapter: Driver specific private structure
  * @max_q: vport max queue structure
+ * @vport_type: Queue request for default or dynamic vport
  */
-int idpf_vport_alloc_max_qs(struct idpf_adapter *adapter,
-			    struct idpf_vport_max_q *max_q)
+int idpf_alloc_max_qs(struct idpf_adapter *adapter,
+		      struct idpf_max_q *max_q,
+		      enum idpf_vport_type vport_type)
 {
-	struct idpf_avail_queue_info *avail_queues = &adapter->avail_queues;
 	struct virtchnl2_get_capabilities *caps = &adapter->caps;
-	u16 default_vports = idpf_get_default_vports(adapter);
+	struct idpf_avail_queue_info *avail_queues;
 	int max_rx_q, max_tx_q;
 
+	avail_queues = &adapter->avail_queues;
 	mutex_lock(&adapter->queue_lock);
 
-	max_rx_q = le16_to_cpu(caps->max_rx_q) / default_vports;
-	max_tx_q = le16_to_cpu(caps->max_tx_q) / default_vports;
-	if (adapter->num_alloc_vports < default_vports) {
+	max_rx_q = le16_to_cpu(caps->max_rx_q) / adapter->default_vports;
+	max_tx_q = le16_to_cpu(caps->max_tx_q) / adapter->default_vports;
+	if (vport_type == IDPF_DEFAULT_VPORT) {
 		max_q->max_rxq = min_t(u16, max_rx_q, IDPF_MAX_Q);
 		max_q->max_txq = min_t(u16, max_tx_q, IDPF_MAX_Q);
 	} else {
@@ -776,12 +795,12 @@ int idpf_vport_alloc_max_qs(struct idpf_adapter *adapter,
 }
 
 /**
- * idpf_vport_dealloc_max_qs - Deallocate max queues of a vport
+ * idpf_dealloc_max_qs - Deallocate max queues of a vport
  * @adapter: Driver specific private structure
  * @max_q: vport max queue structure
  */
-void idpf_vport_dealloc_max_qs(struct idpf_adapter *adapter,
-			       struct idpf_vport_max_q *max_q)
+void idpf_dealloc_max_qs(struct idpf_adapter *adapter,
+			 struct idpf_max_q *max_q)
 {
 	struct idpf_avail_queue_info *avail_queues;
 
@@ -813,12 +832,12 @@ static void idpf_init_avail_queues(struct idpf_adapter *adapter)
 
 /**
  * idpf_get_reg_intr_vecs - Get vector queue register offset
- * @vport: virtual port structure
+ * @adapter: Adapter data structure
  * @reg_vals: Register offsets to store in
  *
  * Returns number of registers that got populated
  */
-int idpf_get_reg_intr_vecs(struct idpf_vport *vport,
+int idpf_get_reg_intr_vecs(struct idpf_adapter *adapter,
 			   struct idpf_vec_regs *reg_vals)
 {
 	struct virtchnl2_vector_chunks *chunks;
@@ -826,7 +845,7 @@ int idpf_get_reg_intr_vecs(struct idpf_vport *vport,
 	u16 num_vchunks, num_vec;
 	int num_regs = 0, i, j;
 
-	chunks = &vport->adapter->req_vec_chunks->vchunks;
+	chunks = &adapter->req_vec_chunks->vchunks;
 	num_vchunks = le16_to_cpu(chunks->num_vchunks);
 
 	for (j = 0; j < num_vchunks; j++) {
@@ -838,7 +857,8 @@ int idpf_get_reg_intr_vecs(struct idpf_vport *vport,
 		num_vec = le16_to_cpu(chunk->num_vectors);
 		reg_val.dyn_ctl_reg = le32_to_cpu(chunk->dynctl_reg_start);
 		reg_val.itrn_reg = le32_to_cpu(chunk->itrn_reg_start);
-		reg_val.itrn_index_spacing = le32_to_cpu(chunk->itrn_index_spacing);
+		reg_val.itrn_index_spacing =
+			le32_to_cpu(chunk->itrn_index_spacing);
 
 		dynctl_reg_spacing = le32_to_cpu(chunk->dynctl_reg_spacing);
 		itrn_reg_spacing = le32_to_cpu(chunk->itrn_reg_spacing);
@@ -1058,65 +1078,6 @@ void idpf_deinit_dflt_mbx(struct idpf_adapter *adapter)
 }
 
 /**
- * idpf_vport_params_buf_rel - Release memory for MailBox resources
- * @adapter: Driver specific private data structure
- *
- * Will release memory to hold the vport parameters received on MailBox
- */
-static void idpf_vport_params_buf_rel(struct idpf_adapter *adapter)
-{
-	kfree(adapter->vport_params_recvd);
-	adapter->vport_params_recvd = NULL;
-	kfree(adapter->vport_params_reqd);
-	adapter->vport_params_reqd = NULL;
-	kfree(adapter->vport_ids);
-	adapter->vport_ids = NULL;
-}
-
-/**
- * idpf_vport_params_buf_alloc - Allocate memory for MailBox resources
- * @adapter: Driver specific private data structure
- *
- * Will alloc memory to hold the vport parameters received on MailBox
- */
-static int idpf_vport_params_buf_alloc(struct idpf_adapter *adapter)
-{
-	u16 num_max_vports = idpf_get_max_vports(adapter);
-
-	adapter->vport_params_reqd = kcalloc(num_max_vports,
-					     sizeof(*adapter->vport_params_reqd),
-					     GFP_KERNEL);
-	if (!adapter->vport_params_reqd)
-		return -ENOMEM;
-
-	adapter->vport_params_recvd = kcalloc(num_max_vports,
-					      sizeof(*adapter->vport_params_recvd),
-					      GFP_KERNEL);
-	if (!adapter->vport_params_recvd)
-		goto err_mem;
-
-	adapter->vport_ids = kcalloc(num_max_vports, sizeof(u32), GFP_KERNEL);
-	if (!adapter->vport_ids)
-		goto err_mem;
-
-	if (adapter->vport_config)
-		return 0;
-
-	adapter->vport_config = kcalloc(num_max_vports,
-					sizeof(*adapter->vport_config),
-					GFP_KERNEL);
-	if (!adapter->vport_config)
-		goto err_mem;
-
-	return 0;
-
-err_mem:
-	idpf_vport_params_buf_rel(adapter);
-
-	return -ENOMEM;
-}
-
-/**
  * idpf_vc_core_init - Initialize state machine and get driver specific
  * resources
  * @adapter: Driver specific private structure
@@ -1131,8 +1092,8 @@ err_mem:
  */
 int idpf_vc_core_init(struct idpf_adapter *adapter)
 {
+	struct virtchnl2_get_capabilities *caps;
 	int task_delay = 30;
-	u16 num_max_vports;
 	int err = 0;
 
 	if (!adapter->vcxn_mngr) {
@@ -1166,9 +1127,14 @@ int idpf_vc_core_init(struct idpf_adapter *adapter)
 			if (err)
 				goto init_failed;
 			adapter->state = __IDPF_INIT_SW;
+			caps = &adapter->caps;
+			adapter->max_vports = le16_to_cpu(caps->max_vports);
+			adapter->default_vports =
+				le16_to_cpu(caps->default_num_vports);
 			break;
 		default:
-			dev_err(&adapter->pdev->dev, "Device is in bad state: %d\n",
+			dev_err(&adapter->pdev->dev,
+				"Device is in bad state: %d\n",
 				adapter->state);
 			err = -EINVAL;
 			goto init_failed;
@@ -1182,29 +1148,6 @@ restart:
 	}
 
 	pci_sriov_set_totalvfs(adapter->pdev, idpf_get_max_vfs(adapter));
-	num_max_vports = idpf_get_max_vports(adapter);
-	adapter->max_vports = num_max_vports;
-	adapter->vports = kcalloc(num_max_vports, sizeof(*adapter->vports),
-				  GFP_KERNEL);
-	if (!adapter->vports)
-		return -ENOMEM;
-
-	if (!adapter->netdevs) {
-		adapter->netdevs = kcalloc(num_max_vports,
-					   sizeof(struct net_device *),
-					   GFP_KERNEL);
-		if (!adapter->netdevs) {
-			err = -ENOMEM;
-			goto err_netdev_alloc;
-		}
-	}
-
-	err = idpf_vport_params_buf_alloc(adapter);
-	if (err) {
-		dev_err(&adapter->pdev->dev, "Failed to alloc vport params buffer: %d\n",
-			err);
-		goto err_netdev_alloc;
-	}
 
 	/* Start the mailbox task before requesting vectors. This will ensure
 	 * vector information response from mailbox is handled
@@ -1212,43 +1155,35 @@ restart:
 	queue_delayed_work(adapter->mbx_wq, &adapter->mbx_task, 0);
 
 	queue_delayed_work(adapter->serv_wq, &adapter->serv_task,
-			   msecs_to_jiffies(5 * (adapter->pdev->devfn & 0x07)));
+			   msecs_to_jiffies(5));
 
 	err = idpf_intr_req(adapter);
 	if (err) {
-		dev_err(&adapter->pdev->dev, "failed to enable interrupt vectors: %d\n",
+		dev_err(&adapter->pdev->dev,
+			"failed to enable interrupt vectors: %d\n",
 			err);
 		goto err_intr_req;
 	}
 
 	idpf_init_avail_queues(adapter);
 
-	/* Skew the delay for init tasks for each function based on fn number
-	 * to prevent every function from making the same call simultaneously.
-	 */
-	queue_delayed_work(adapter->init_wq, &adapter->init_task,
-			   msecs_to_jiffies(5 * (adapter->pdev->devfn & 0x07)));
-
-	set_bit(IDPF_VC_CORE_INIT, adapter->flags);
+	set_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter));
 
 	return 0;
 
 err_intr_req:
 	cancel_delayed_work_sync(&adapter->serv_task);
 	cancel_delayed_work_sync(&adapter->mbx_task);
-	idpf_vport_params_buf_rel(adapter);
-err_netdev_alloc:
-	kfree(adapter->vports);
-	adapter->vports = NULL;
 	return err;
 
 init_failed:
 	/* Don't retry if we're trying to go down, just bail. */
-	if (test_bit(IDPF_REMOVE_IN_PROG, adapter->flags))
+	if (test_bit(IDPF_REMOVE_IN_PROG, idpf_adapter_flags(adapter)))
 		return err;
 
 	if (++adapter->mb_wait_count > IDPF_MB_MAX_ERR) {
-		dev_err(&adapter->pdev->dev, "Failed to establish mailbox communications with hardware\n");
+		dev_err(&adapter->pdev->dev,
+			"Failed to establish mailbox communications with hardware\n");
 
 		return -EFAULT;
 	}
@@ -1260,7 +1195,7 @@ init_failed:
 	if (adapter->vcxn_mngr)
 		idpf_vc_xn_shutdown(adapter->vcxn_mngr);
 	idpf_deinit_dflt_mbx(adapter);
-	set_bit(IDPF_HR_DRV_LOAD, adapter->flags);
+	set_bit(IDPF_HR_DRV_LOAD, idpf_adapter_flags(adapter));
 	queue_delayed_work(adapter->vc_event_wq, &adapter->vc_event_task,
 			   msecs_to_jiffies(task_delay));
 
@@ -1274,22 +1209,15 @@ init_failed:
  */
 void idpf_vc_core_deinit(struct idpf_adapter *adapter)
 {
-	if (!test_bit(IDPF_VC_CORE_INIT, adapter->flags))
+	if (!test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)))
 		return;
 
-	idpf_vc_xn_shutdown(adapter->vcxn_mngr);
-	idpf_deinit_task(adapter);
 	idpf_intr_rel(adapter);
 
 	cancel_delayed_work_sync(&adapter->serv_task);
 	cancel_delayed_work_sync(&adapter->mbx_task);
 
-	idpf_vport_params_buf_rel(adapter);
-
-	kfree(adapter->vports);
-	adapter->vports = NULL;
-
-	clear_bit(IDPF_VC_CORE_INIT, adapter->flags);
+	clear_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter));
 }
 
 /**
@@ -1335,48 +1263,4 @@ int idpf_get_vec_ids(struct idpf_adapter *adapter,
 	}
 
 	return num_vecid_filled;
-}
-
-/**
- * idpf_is_capability_ena - Default implementation of capability checking
- * @adapter: Private data struct
- * @all: all or one flag
- * @field: caps field to check for flags
- * @flag: flag to check
- *
- * Return true if all capabilities are supported, false otherwise
- */
-bool idpf_is_capability_ena(struct idpf_adapter *adapter, bool all,
-			    enum idpf_cap_field field, u64 flag)
-{
-	u8 *caps = (u8 *)&adapter->caps;
-	u32 *cap_field;
-
-	if (!caps)
-		return false;
-
-	if (field == IDPF_BASE_CAPS)
-		return false;
-
-	cap_field = (u32 *)(caps + field);
-
-	if (all)
-		return (*cap_field & flag) == flag;
-	else
-		return !!(*cap_field & flag);
-}
-
-/**
- * idpf_get_vport_id: Get vport id
- * @vport: virtual port structure
- *
- * Return vport id from the adapter persistent data
- */
-u32 idpf_get_vport_id(struct idpf_vport *vport)
-{
-	struct virtchnl2_create_vport *vport_msg;
-
-	vport_msg = vport->adapter->vport_params_recvd[vport->idx];
-
-	return le32_to_cpu(vport_msg->vport_id);
 }

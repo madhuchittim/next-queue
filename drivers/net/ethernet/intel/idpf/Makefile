@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-2.0-only
-# Copyright (C) 2024 Intel Corporation
+# Copyright (C) 2023 Intel Corporation
 
 # Makefile for Intel(R) Infrastructure Data Path Function Linux Driver
 
@@ -9,7 +9,9 @@ idpf-y := \
 	idpf_controlq.o		\
 	idpf_controlq_setup.o	\
 	idpf_dev.o		\
+	idpf_eth.o		\
 	idpf_ethtool.o		\
+	idpf_eth_idc.o		\
 	idpf_fltr.o		\
 	idpf_lib.o		\
 	idpf_main.o		\
