@@ -10,12 +10,6 @@
 
 #include "virtchnl2_lan_desc.h"
 
-#define IDPF_LARGE_MAX_Q			256
-#define IDPF_MAX_Q				16
-#define IDPF_MIN_Q				2
-/* Mailbox Queue */
-#define IDPF_MAX_MBXQ				1
-
 #define IDPF_MIN_TXQ_DESC			64
 #define IDPF_MIN_RXQ_DESC			64
 #define IDPF_MIN_TXQ_COMPLQ_DESC		256
@@ -44,16 +38,11 @@
 
 #define IDPF_COMPLQ_PER_GROUP			1
 #define IDPF_SINGLE_BUFQ_PER_RXQ_GRP		1
-#define IDPF_MAX_BUFQS_PER_RXQ_GRP		2
 #define IDPF_BUFQ2_ENA				1
 #define IDPF_NUMQ_PER_CHUNK			1
 
 #define IDPF_DFLT_SPLITQ_TXQ_PER_GROUP		1
 #define IDPF_DFLT_SPLITQ_RXQ_PER_GROUP		1
-
-/* Default vector sharing */
-#define IDPF_MBX_Q_VEC		1
-#define IDPF_MIN_Q_VEC		1
 
 #define IDPF_DFLT_TX_Q_DESC_COUNT		512
 #define IDPF_DFLT_TX_COMPLQ_DESC_COUNT		512
@@ -296,7 +285,6 @@ struct idpf_rx_extracted {
 };
 
 #define IDPF_TX_COMPLQ_CLEAN_BUDGET	256
-#define IDPF_TX_MIN_PKT_LEN		17
 #define IDPF_TX_DESCS_FOR_SKB_DATA_PTR	1
 #define IDPF_TX_DESCS_PER_CACHE_LINE	(L1_CACHE_BYTES / \
 					 sizeof(struct idpf_flex_tx_desc))
@@ -469,95 +457,6 @@ enum idpf_queue_flags_t {
 	__IDPF_Q_FLAGS_NBITS,
 };
 
-/**
- * struct idpf_vec_regs
- * @dyn_ctl_reg: Dynamic control interrupt register offset
- * @itrn_reg: Interrupt Throttling Rate register offset
- * @itrn_index_spacing: Register spacing between ITR registers of the same
- *			vector
- */
-struct idpf_vec_regs {
-	u32 dyn_ctl_reg;
-	u32 itrn_reg;
-	u32 itrn_index_spacing;
-};
-
-/**
- * struct idpf_intr_reg
- * @dyn_ctl: Dynamic control interrupt register
- * @dyn_ctl_intena_m: Mask for dyn_ctl interrupt enable
- * @dyn_ctl_itridx_s: Register bit offset for ITR index
- * @dyn_ctl_itridx_m: Mask for ITR index
- * @dyn_ctl_intrvl_s: Register bit offset for ITR interval
- * @rx_itr: RX ITR register
- * @tx_itr: TX ITR register
- * @icr_ena: Interrupt cause register offset
- * @icr_ena_ctlq_m: Mask for ICR
- */
-struct idpf_intr_reg {
-	void __iomem *dyn_ctl;
-	u32 dyn_ctl_intena_m;
-	u32 dyn_ctl_itridx_s;
-	u32 dyn_ctl_itridx_m;
-	u32 dyn_ctl_intrvl_s;
-	void __iomem *rx_itr;
-	void __iomem *tx_itr;
-	void __iomem *icr_ena;
-	u32 icr_ena_ctlq_m;
-};
-
-/**
- * struct idpf_q_vector
- * @vport: Vport back pointer
- * @affinity_mask: CPU affinity mask
- * @napi: napi handler
- * @v_idx: Vector index
- * @intr_reg: See struct idpf_intr_reg
- * @num_txq: Number of TX queues
- * @tx: Array of TX queues to service
- * @tx_dim: Data for TX net_dim algorithm
- * @tx_itr_value: TX interrupt throttling rate
- * @tx_intr_mode: Dynamic ITR or not
- * @tx_itr_idx: TX ITR index
- * @num_rxq: Number of RX queues
- * @rx: Array of RX queues to service
- * @rx_dim: Data for RX net_dim algorithm
- * @rx_itr_value: RX interrupt throttling rate
- * @rx_intr_mode: Dynamic ITR or not
- * @rx_itr_idx: RX ITR index
- * @num_bufq: Number of buffer queues
- * @bufq: Array of buffer queues to service
- * @total_events: Number of interrupts processed
- * @name: Queue vector name
- */
-struct idpf_q_vector {
-	struct idpf_vport *vport;
-	cpumask_t affinity_mask;
-	struct napi_struct napi;
-	u16 v_idx;
-	struct idpf_intr_reg intr_reg;
-
-	u16 num_txq;
-	struct idpf_queue **tx;
-	struct dim tx_dim;
-	u16 tx_itr_value;
-	bool tx_intr_mode;
-	u32 tx_itr_idx;
-
-	u16 num_rxq;
-	struct idpf_queue **rx;
-	struct dim rx_dim;
-	u16 rx_itr_value;
-	bool rx_intr_mode;
-	u32 rx_itr_idx;
-
-	u16 num_bufq;
-	struct idpf_queue **bufq;
-
-	u16 total_events;
-	char *name;
-};
-
 struct idpf_rx_queue_stats {
 	u64_stats_t packets;
 	u64_stats_t bytes;
@@ -599,7 +498,7 @@ union idpf_queue_stats {
 #define IDPF_ITR_RX_DEF		IDPF_ITR_20K
 /* Index used for 'No ITR' update in DYN_CTL register */
 #define IDPF_NO_ITR_UPDATE_IDX	3
-#define IDPF_ITR_IDX_SPACING(spacing, dflt)	(spacing ? spacing : dflt)
+
 #define IDPF_DIM_DEFAULT_PROFILE_IX		1
 
 /**
@@ -979,9 +878,6 @@ int idpf_vport_singleq_napi_poll(struct napi_struct *napi, int budget);
 void idpf_vport_init_num_qs(struct idpf_vport *vport,
 			    struct virtchnl2_create_vport *vport_msg);
 void idpf_vport_calc_num_q_desc(struct idpf_vport *vport);
-int idpf_vport_calc_total_qs(struct idpf_adapter *adapter, u16 vport_index,
-			     struct virtchnl2_create_vport *vport_msg,
-			     struct idpf_vport_max_q *max_q);
 void idpf_vport_calc_num_q_groups(struct idpf_vport *vport);
 int idpf_vport_queues_alloc(struct idpf_vport *vport);
 void idpf_vport_queues_rel(struct idpf_vport *vport);
@@ -1013,7 +909,6 @@ unsigned int idpf_tx_desc_count_required(struct idpf_queue *txq,
 bool idpf_chk_linearize(struct sk_buff *skb, unsigned int max_bufs,
 			unsigned int count);
 int idpf_tx_maybe_stop_common(struct idpf_queue *tx_q, unsigned int size);
-void idpf_tx_timeout(struct net_device *netdev, unsigned int txqueue);
 netdev_tx_t idpf_tx_splitq_start(struct sk_buff *skb,
 				 struct net_device *netdev);
 netdev_tx_t idpf_tx_singleq_start(struct sk_buff *skb,
@@ -1021,5 +916,16 @@ netdev_tx_t idpf_tx_singleq_start(struct sk_buff *skb,
 bool idpf_rx_singleq_buf_hw_alloc_all(struct idpf_queue *rxq,
 				      u16 cleaned_count);
 int idpf_tso(struct sk_buff *skb, struct idpf_tx_offload_params *off);
+int idpf_vport_splitq_napi_poll(struct napi_struct *napi, int budget);
+void idpf_init_dim(struct idpf_q_vector *qv);
+irqreturn_t idpf_vport_intr_clean_queues(int __always_unused irq, void *data);
+void idpf_rxq_sw_queue_rel(struct idpf_rxq_group *rx_qgrp);
+int idpf_rx_desc_alloc(struct idpf_queue *rxq, bool bufq, s32 q_model);
+int idpf_rx_bufs_init(struct idpf_queue *rxbufq);
+void idpf_rx_desc_rel(struct idpf_queue *rxq, bool bufq, s32 q_model);
+int idpf_tx_desc_alloc(struct idpf_queue *tx_q, bool bufq);
+void idpf_tx_desc_rel(struct idpf_queue *txq, bool bufq);
+void idpf_rx_hdr_buf_rel_all(struct idpf_queue *rxq);
+int idpf_rx_hdr_buf_alloc_all(struct idpf_queue *rxq);
 
 #endif /* !_IDPF_TXRX_H_ */

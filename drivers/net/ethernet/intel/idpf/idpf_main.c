@@ -3,12 +3,32 @@
 
 #include "idpf.h"
 #include "idpf_devids.h"
-#include "idpf_virtchnl.h"
 
 #define DRV_SUMMARY	"Intel(R) Infrastructure Data Path Function Linux Driver"
 
 MODULE_DESCRIPTION(DRV_SUMMARY);
 MODULE_LICENSE("GPL");
+
+/**
+ * idpf_alloc_adapter - Allocate devlink and return adapter structure pointer
+ * @dev: the device to allocate for
+ *
+ * Allocate a devlink instance for this device and return the private area as
+ * the PF structure. The devlink memory is kept track of through devres by
+ * adding an action to remove it when unwinding.
+ */
+static struct idpf_adapter *idpf_alloc_adapter(struct device *dev)
+{
+	static struct devlink_ops idpf_devlink_ops = {};
+	struct devlink *devlink;
+
+	devlink = devlink_alloc(&idpf_devlink_ops,
+				sizeof(struct idpf_adapter), dev);
+	if (!devlink)
+		return NULL;
+
+	return devlink_priv(devlink);
+}
 
 /**
  * idpf_remove - Device removal routine
@@ -17,9 +37,8 @@ MODULE_LICENSE("GPL");
 static void idpf_remove(struct pci_dev *pdev)
 {
 	struct idpf_adapter *adapter = pci_get_drvdata(pdev);
-	int i;
 
-	set_bit(IDPF_REMOVE_IN_PROG, adapter->flags);
+	set_bit(IDPF_REMOVE_IN_PROG, idpf_adapter_flags(adapter));
 
 	/* Wait until vc_event_task is done to consider if any hard reset is
 	 * in progress else we may go ahead and release the resources but the
@@ -30,54 +49,37 @@ static void idpf_remove(struct pci_dev *pdev)
 	if (adapter->num_vfs)
 		idpf_sriov_configure(pdev, 0);
 
+	if (test_bit(IDPF_VC_CORE_INIT, idpf_adapter_flags(adapter)) &&
+	    !test_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter))) {
+		idpf_vc_xn_shutdown(adapter->vcxn_mngr);
+		set_bit(IDPF_VC_XN_DOWN, idpf_adapter_flags(adapter));
+	}
+
+	idpf_eth_idc_device_deinit(adapter);
 	idpf_vc_core_deinit(adapter);
 
 	/* Be a good citizen and leave the device clean on exit */
 	adapter->dev_ops.reg_ops.trigger_reset(adapter, IDPF_HR_FUNC_RESET);
 	idpf_deinit_dflt_mbx(adapter);
 
-	if (!adapter->netdevs)
-		goto destroy_wqs;
-
-	/* There are some cases where it's possible to still have netdevs
-	 * registered with the stack at this point, e.g. if the driver detected
-	 * a HW reset and rmmod is called before it fully recovers. Unregister
-	 * any stale netdevs here.
-	 */
-	for (i = 0; i < adapter->max_vports; i++) {
-		if (!adapter->netdevs[i])
-			continue;
-		if (adapter->netdevs[i]->reg_state != NETREG_UNINITIALIZED)
-			unregister_netdev(adapter->netdevs[i]);
-		free_netdev(adapter->netdevs[i]);
-		adapter->netdevs[i] = NULL;
-	}
-
-destroy_wqs:
-	destroy_workqueue(adapter->init_wq);
 	destroy_workqueue(adapter->serv_wq);
 	destroy_workqueue(adapter->mbx_wq);
-	destroy_workqueue(adapter->stats_wq);
 	destroy_workqueue(adapter->vc_event_wq);
+	destroy_workqueue(adapter->idc_eth_init_wq);
 
-	for (i = 0; i < adapter->max_vports; i++) {
-		kfree(adapter->vport_config[i]);
-		adapter->vport_config[i] = NULL;
-	}
-	kfree(adapter->vport_config);
-	adapter->vport_config = NULL;
-	kfree(adapter->netdevs);
-	adapter->netdevs = NULL;
 	kfree(adapter->vcxn_mngr);
 	adapter->vcxn_mngr = NULL;
 
-	mutex_destroy(&adapter->vport_ctrl_lock);
+	mutex_destroy(&adapter->reset_lock);
 	mutex_destroy(&adapter->vector_lock);
 	mutex_destroy(&adapter->queue_lock);
 	mutex_destroy(&adapter->vc_buf_lock);
 
+	idpf_eth_idc_deinit_shared(&adapter->eth_shared);
 	pci_set_drvdata(pdev, NULL);
-	kfree(adapter);
+
+	devl_unregister(priv_to_devlink(adapter));
+	devlink_free(priv_to_devlink(adapter));
 }
 
 /**
@@ -128,13 +130,11 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	struct idpf_adapter *adapter;
 	int err;
 
-	adapter = kzalloc(sizeof(*adapter), GFP_KERNEL);
+	adapter = idpf_alloc_adapter(dev);
 	if (!adapter)
 		return -ENOMEM;
 
-	adapter->req_tx_splitq = true;
-	adapter->req_rx_splitq = true;
-
+	adapter->pdev = pdev;
 	switch (ent->device) {
 	case IDPF_DEV_ID_PF:
 		idpf_dev_ops_init(adapter);
@@ -150,7 +150,10 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_free;
 	}
 
-	adapter->pdev = pdev;
+	err = idpf_eth_idc_init_shared(&adapter->eth_shared);
+	if (err)
+		goto err_free;
+
 	err = pcim_enable_device(pdev);
 	if (err)
 		goto err_free;
@@ -173,14 +176,7 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, adapter);
 
-	adapter->init_wq = alloc_workqueue("%s-%s-init", 0, 0,
-					   dev_driver_string(dev),
-					   dev_name(dev));
-	if (!adapter->init_wq) {
-		dev_err(dev, "Failed to allocate init workqueue\n");
-		err = -ENOMEM;
-		goto err_free;
-	}
+	devl_register(priv_to_devlink(adapter));
 
 	adapter->serv_wq = alloc_workqueue("%s-%s-service", 0, 0,
 					   dev_driver_string(dev),
@@ -200,15 +196,6 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_mbx_wq_alloc;
 	}
 
-	adapter->stats_wq = alloc_workqueue("%s-%s-stats", 0, 0,
-					    dev_driver_string(dev),
-					    dev_name(dev));
-	if (!adapter->stats_wq) {
-		dev_err(dev, "Failed to allocate workqueue\n");
-		err = -ENOMEM;
-		goto err_stats_wq_alloc;
-	}
-
 	adapter->vc_event_wq = alloc_workqueue("%s-%s-vc_event", 0, 0,
 					       dev_driver_string(dev),
 					       dev_name(dev));
@@ -218,8 +205,14 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_vc_event_wq_alloc;
 	}
 
-	/* setup msglvl */
-	adapter->msg_enable = netif_msg_init(-1, IDPF_AVAIL_NETIF_M);
+	adapter->idc_eth_init_wq = alloc_workqueue("%s-%s-ethinit", 0, 0,
+						   dev_driver_string(dev),
+						   dev_name(dev));
+	if (!adapter->idc_eth_init_wq) {
+		dev_err(dev, "Failed to allocate Eth idc init workqueue\n");
+		err = -ENOMEM;
+		goto err_idc_eth_wq_alloc;
+	}
 
 	err = idpf_cfg_hw(adapter);
 	if (err) {
@@ -228,35 +221,35 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_cfg_hw;
 	}
 
-	mutex_init(&adapter->vport_ctrl_lock);
+	mutex_init(&adapter->reset_lock);
 	mutex_init(&adapter->vector_lock);
 	mutex_init(&adapter->queue_lock);
 	mutex_init(&adapter->vc_buf_lock);
 
-	INIT_DELAYED_WORK(&adapter->init_task, idpf_init_task);
 	INIT_DELAYED_WORK(&adapter->serv_task, idpf_service_task);
 	INIT_DELAYED_WORK(&adapter->mbx_task, idpf_mbx_task);
-	INIT_DELAYED_WORK(&adapter->stats_task, idpf_statistics_task);
 	INIT_DELAYED_WORK(&adapter->vc_event_task, idpf_vc_event_task);
+	INIT_DELAYED_WORK(&adapter->idc_eth_init_task,
+			  idpf_idc_eth_device_init_task);
 
 	adapter->dev_ops.reg_ops.reset_reg_init(adapter);
-	set_bit(IDPF_HR_DRV_LOAD, adapter->flags);
+	set_bit(IDPF_HR_DRV_LOAD, idpf_adapter_flags(adapter));
 	queue_delayed_work(adapter->vc_event_wq, &adapter->vc_event_task,
 			   msecs_to_jiffies(10 * (pdev->devfn & 0x07)));
 
 	return 0;
 
 err_cfg_hw:
+	destroy_workqueue(adapter->idc_eth_init_wq);
+err_idc_eth_wq_alloc:
 	destroy_workqueue(adapter->vc_event_wq);
 err_vc_event_wq_alloc:
-	destroy_workqueue(adapter->stats_wq);
-err_stats_wq_alloc:
 	destroy_workqueue(adapter->mbx_wq);
 err_mbx_wq_alloc:
 	destroy_workqueue(adapter->serv_wq);
 err_serv_wq_alloc:
-	destroy_workqueue(adapter->init_wq);
 err_free:
+	idpf_eth_idc_deinit_shared(&adapter->eth_shared);
 	kfree(adapter);
 	return err;
 }
@@ -278,4 +271,35 @@ static struct pci_driver idpf_driver = {
 	.remove			= idpf_remove,
 	.shutdown		= idpf_shutdown,
 };
-module_pci_driver(idpf_driver);
+
+/**
+ * idpf_driver_register - Device registration routine
+ * @void: void
+ *
+ * Returns 0 on success, otherwise function returned on failure
+ */
+static int __init idpf_driver_register(void)
+{
+	int err;
+
+	err = idpf_eth_idc_driver_register();
+	if (err)
+		return err;
+
+	return  pci_register_driver(&idpf_driver);
+}
+
+/**
+ * idpf_driver_unregister - Device unregister routine
+ * @void: void
+ *
+ * Returns void
+ */
+static void __exit idpf_driver_unregister(void)
+{
+	idpf_eth_idc_driver_unregister();
+	pci_unregister_driver(&idpf_driver);
+}
+
+module_init(idpf_driver_register);
+module_exit(idpf_driver_unregister);
