@@ -2,6 +2,12 @@
 /* Copyright (C) 2023 Intel Corporation */
 
 #include "idpf.h"
+#if 0
+#include "net/libeth/libeth_eth_idc.h"
+#include "net/libeth/libeth_dev.h"
+#else
+void libeth_print_hello(void);
+#endif
 
 static DEFINE_IDA(idpf_eth_idc_ida);
 
@@ -369,6 +375,25 @@ void idpf_eth_idc_device_init(struct idpf_adapter *adapter)
 	struct device *dev = &adapter->pdev->dev;
 	int err;
 	u16 i;
+
+//############### EXPERIMENT START ############################
+#if 0
+	struct idc_eth_auxiliary_dev *eth_aux_dev;
+	struct virtchnl2_get_capabilities caps;
+	//struct idc_eth_extended_caps_info ext_caps;
+	//struct libeth_mmio_region *mem_regions = NULL;
+	int num_regions = 0;
+	//struct idc_eth_ops ops;
+
+	eth_aux_dev = libeth_idc_eth_dev_create(adapter->pdev, &caps, NULL,
+						NULL, num_regions, NULL);
+	if (!eth_aux_dev)
+		printk("libeth_idc_eth_dev_create : [eth_aux_dev = %p]",
+			eth_aux_dev);
+#else
+	libeth_print_hello();
+#endif
+//############### EXPERIMENT END ##############################
 
 	/* Check if device is already initialized */
 	if (adapter->adevs)
