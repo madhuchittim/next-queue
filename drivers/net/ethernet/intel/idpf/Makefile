@@ -6,9 +6,11 @@
 obj-$(CONFIG_IDPF) += idpf.o
 
 idpf-y := \
+	idpf_aux.o		\
 	idpf_controlq.o		\
 	idpf_controlq_setup.o	\
 	idpf_dev.o		\
+	idpf_eth.o		\
 	idpf_ethtool.o		\
 	idpf_lib.o		\
 	idpf_main.o		\

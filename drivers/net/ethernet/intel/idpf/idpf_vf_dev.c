@@ -65,32 +65,35 @@ static void idpf_vf_mb_intr_reg_init(struct idpf_adapter *adapter)
 
 /**
  * idpf_vf_intr_reg_init - Initialize interrupt registers
- * @vport: virtual port structure
  */
-static int idpf_vf_intr_reg_init(struct idpf_vport *vport)
+static int idpf_vf_intr_reg_init(struct idpf_aux_dev_info *dev_info,
+				 u16 num_vecs,
+				 struct idpf_q_vector *q_vectors,
+				 u16 *q_vector_idxs)
 {
-	struct idpf_adapter *adapter = vport->adapter;
-	int num_vecs = vport->num_q_vectors;
 	struct idpf_vec_regs *reg_vals;
+	struct idpf_adapter *adapter;
 	int num_regs, i, err = 0;
 	u32 rx_itr, tx_itr;
 	u16 total_vecs;
 
-	total_vecs = idpf_get_reserved_vecs(vport->adapter);
+	adapter = container_of(dev_info->aux_shared, struct idpf_adapter,
+			       aux_shared);
+	total_vecs = idpf_get_reserved_vecs(adapter);
 	reg_vals = kcalloc(total_vecs, sizeof(struct idpf_vec_regs),
 			   GFP_KERNEL);
 	if (!reg_vals)
 		return -ENOMEM;
 
-	num_regs = idpf_get_reg_intr_vecs(vport, reg_vals);
+	num_regs = idpf_get_reg_intr_vecs(adapter, reg_vals);
 	if (num_regs < num_vecs) {
 		err = -EINVAL;
 		goto free_reg_vals;
 	}
 
 	for (i = 0; i < num_vecs; i++) {
-		struct idpf_q_vector *q_vector = &vport->q_vectors[i];
-		u16 vec_id = vport->q_vector_idxs[i] - IDPF_MBX_Q_VEC;
+		struct idpf_q_vector *q_vector = &q_vectors[i];
+		u16 vec_id = q_vector_idxs[i] - IDPF_MBX_Q_VEC;
 		struct idpf_intr_reg *intr = &q_vector->intr_reg;
 		u32 spacing;
 
