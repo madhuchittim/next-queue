@@ -18,7 +18,6 @@ MODULE_LICENSE("GPL");
 static void idpf_remove(struct pci_dev *pdev)
 {
 	struct idpf_adapter *adapter = pci_get_drvdata(pdev);
-	int i;
 
 	set_bit(IDPF_REMOVE_IN_PROG, adapter->flags);
 
@@ -32,43 +31,17 @@ static void idpf_remove(struct pci_dev *pdev)
 		idpf_sriov_configure(pdev, 0);
 
 	idpf_vc_core_deinit(adapter);
+	idpf_aux_del_devices(adapter);
 
 	/* Be a good citizen and leave the device clean on exit */
 	adapter->dev_ops.reg_ops.trigger_reset(adapter, IDPF_HR_FUNC_RESET);
 	idpf_deinit_dflt_mbx(adapter);
 
-	if (!adapter->netdevs)
-		goto destroy_wqs;
-
-	/* There are some cases where it's possible to still have netdevs
-	 * registered with the stack at this point, e.g. if the driver detected
-	 * a HW reset and rmmod is called before it fully recovers. Unregister
-	 * any stale netdevs here.
-	 */
-	for (i = 0; i < adapter->max_vports; i++) {
-		if (!adapter->netdevs[i])
-			continue;
-		if (adapter->netdevs[i]->reg_state != NETREG_UNINITIALIZED)
-			unregister_netdev(adapter->netdevs[i]);
-		free_netdev(adapter->netdevs[i]);
-		adapter->netdevs[i] = NULL;
-	}
-
-destroy_wqs:
-	destroy_workqueue(adapter->init_wq);
 	destroy_workqueue(adapter->serv_wq);
 	destroy_workqueue(adapter->mbx_wq);
 	destroy_workqueue(adapter->stats_wq);
 	destroy_workqueue(adapter->vc_event_wq);
 
-	for (i = 0; i < adapter->max_vports; i++) {
-		kfree(adapter->vport_config[i]);
-		adapter->vport_config[i] = NULL;
-	}
-	kfree(adapter->vport_config);
-	adapter->vport_config = NULL;
-	kfree(adapter->netdevs);
-	adapter->netdevs = NULL;
 	kfree(adapter->vcxn_mngr);
 	adapter->vcxn_mngr = NULL;
 
@@ -133,16 +106,13 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!adapter)
 		return -ENOMEM;
 
-	adapter->req_tx_splitq = true;
-	adapter->req_rx_splitq = true;
-
 	switch (ent->device) {
 	case IDPF_DEV_ID_PF:
 		idpf_dev_ops_init(adapter);
 		break;
 	case IDPF_DEV_ID_VF:
 		idpf_vf_dev_ops_init(adapter);
-		adapter->crc_enable = true;
+		//adapter->crc_enable = true;
 		break;
 	default:
 		err = -ENODEV;
@@ -174,16 +144,6 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	pci_set_master(pdev);
 	pci_set_drvdata(pdev, adapter);
 
-	adapter->init_wq = alloc_workqueue("%s-%s-init",
-					   WQ_UNBOUND | WQ_MEM_RECLAIM, 0,
-					   dev_driver_string(dev),
-					   dev_name(dev));
-	if (!adapter->init_wq) {
-		dev_err(dev, "Failed to allocate init workqueue\n");
-		err = -ENOMEM;
-		goto err_free;
-	}
-
 	adapter->serv_wq = alloc_workqueue("%s-%s-service",
 					   WQ_UNBOUND | WQ_MEM_RECLAIM, 0,
 					   dev_driver_string(dev),
@@ -191,7 +151,7 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!adapter->serv_wq) {
 		dev_err(dev, "Failed to allocate service workqueue\n");
 		err = -ENOMEM;
-		goto err_serv_wq_alloc;
+		goto err_free;
 	}
 
 	adapter->mbx_wq = alloc_workqueue("%s-%s-mbx",
@@ -224,9 +184,6 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_vc_event_wq_alloc;
 	}
 
-	/* setup msglvl */
-	adapter->msg_enable = netif_msg_init(-1, IDPF_AVAIL_NETIF_M);
-
 	err = idpf_cfg_hw(adapter);
 	if (err) {
 		dev_err(dev, "Failed to configure HW structure for adapter: %d\n",
@@ -239,11 +196,11 @@ static int idpf_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	mutex_init(&adapter->queue_lock);
 	mutex_init(&adapter->vc_buf_lock);
 
-	INIT_DELAYED_WORK(&adapter->init_task, idpf_init_task);
 	INIT_DELAYED_WORK(&adapter->serv_task, idpf_service_task);
 	INIT_DELAYED_WORK(&adapter->mbx_task, idpf_mbx_task);
-	INIT_DELAYED_WORK(&adapter->stats_task, idpf_statistics_task);
 	INIT_DELAYED_WORK(&adapter->vc_event_task, idpf_vc_event_task);
+
+	idpf_aux_init_shared(adapter);
 
 	adapter->dev_ops.reg_ops.reset_reg_init(adapter);
 	set_bit(IDPF_HR_DRV_LOAD, adapter->flags);
@@ -260,8 +217,6 @@ err_stats_wq_alloc:
 	destroy_workqueue(adapter->mbx_wq);
 err_mbx_wq_alloc:
 	destroy_workqueue(adapter->serv_wq);
-err_serv_wq_alloc:
-	destroy_workqueue(adapter->init_wq);
 err_free:
 	kfree(adapter);
 	return err;
@@ -284,4 +239,23 @@ static struct pci_driver idpf_driver = {
 	.remove			= idpf_remove,
 	.shutdown		= idpf_shutdown,
 };
-module_pci_driver(idpf_driver);
+
+static int __init idpf_driver_register(void)
+{
+	int err;
+
+	err = idpf_aux_driver_register();
+	if (err)
+		return err;
+
+	return  pci_register_driver(&idpf_driver);
+}
+
+static void __exit idpf_driver_unregister(void)
+{
+	idpf_aux_driver_unregister();
+	pci_unregister_driver(&idpf_driver);
+}
+
+module_init(idpf_driver_register);
+module_exit(idpf_driver_unregister);
