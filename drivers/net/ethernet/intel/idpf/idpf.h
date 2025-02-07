@@ -6,8 +6,8 @@
 
 /* Forward declaration */
 struct idpf_adapter;
+struct idpf_eth_adapter;
 struct idpf_vport;
-struct idpf_vport_max_q;
 
 #include <net/pkt_sched.h>
 #include <linux/aer.h>
@@ -18,6 +18,7 @@ struct idpf_vport_max_q;
 #include <linux/ethtool_netlink.h>
 #include <net/gro.h>
 
+#include "idpf_aux_idc.h"
 #include "virtchnl2.h"
 #include "idpf_txrx.h"
 #include "idpf_controlq.h"
@@ -45,20 +46,6 @@ struct idpf_vport_max_q;
 
 #define IDPF_VIRTCHNL_VERSION_MAJOR VIRTCHNL2_VERSION_MAJOR_2
 #define IDPF_VIRTCHNL_VERSION_MINOR VIRTCHNL2_VERSION_MINOR_0
-
-/**
- * struct idpf_mac_filter
- * @list: list member field
- * @macaddr: MAC address
- * @remove: filter should be removed (virtchnl)
- * @add: filter should be added (virtchnl)
- */
-struct idpf_mac_filter {
-	struct list_head list;
-	u8 macaddr[ETH_ALEN];
-	bool remove;
-	bool add;
-};
 
 /**
  * enum idpf_state - State machine to handle bring up
@@ -110,17 +97,17 @@ enum idpf_flags {
  */
 enum idpf_cap_field {
 	IDPF_BASE_CAPS		= -1,
-	IDPF_CSUM_CAPS		= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_CSUM_CAPS		= offsetof(struct idpf_eth_aux_dev_caps,
 					   csum_caps),
-	IDPF_SEG_CAPS		= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_SEG_CAPS		= offsetof(struct idpf_eth_aux_dev_caps,
 					   seg_caps),
-	IDPF_RSS_CAPS		= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_RSS_CAPS		= offsetof(struct idpf_eth_aux_dev_caps,
 					   rss_caps),
-	IDPF_HSPLIT_CAPS	= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_HSPLIT_CAPS	= offsetof(struct idpf_eth_aux_dev_caps,
 					   hsplit_caps),
-	IDPF_RSC_CAPS		= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_RSC_CAPS		= offsetof(struct idpf_eth_aux_dev_caps,
 					   rsc_caps),
-	IDPF_OTHER_CAPS		= offsetof(struct virtchnl2_get_capabilities,
+	IDPF_OTHER_CAPS		= offsetof(struct idpf_eth_aux_dev_caps,
 					   other_caps),
 };
 
@@ -137,28 +124,6 @@ enum idpf_vport_state {
 };
 
 /**
- * struct idpf_netdev_priv - Struct to store vport back pointer
- * @adapter: Adapter back pointer
- * @vport: Vport back pointer
- * @vport_id: Vport identifier
- * @link_speed_mbps: Link speed in mbps
- * @vport_idx: Relative vport index
- * @state: See enum idpf_vport_state
- * @netstats: Packet and byte stats
- * @stats_lock: Lock to protect stats update
- */
-struct idpf_netdev_priv {
-	struct idpf_adapter *adapter;
-	struct idpf_vport *vport;
-	u32 vport_id;
-	u32 link_speed_mbps;
-	u16 vport_idx;
-	enum idpf_vport_state state;
-	struct rtnl_link_stats64 netstats;
-	spinlock_t stats_lock;
-};
-
-/**
  * struct idpf_reset_reg - Reset register offsets/masks
  * @rstat: Reset status register
  * @rstat_m: Reset status mask
@@ -166,20 +131,6 @@ struct idpf_netdev_priv {
 struct idpf_reset_reg {
 	void __iomem *rstat;
 	u32 rstat_m;
-};
-
-/**
- * struct idpf_vport_max_q - Queue limits
- * @max_rxq: Maximum number of RX queues supported
- * @max_txq: Maixmum number of TX queues supported
- * @max_bufq: In splitq, maximum number of buffer queues supported
- * @max_complq: In splitq, maximum number of completion queues supported
- */
-struct idpf_vport_max_q {
-	u16 max_rxq;
-	u16 max_txq;
-	u16 max_bufq;
-	u16 max_complq;
 };
 
 /**
@@ -192,7 +143,10 @@ struct idpf_vport_max_q {
  */
 struct idpf_reg_ops {
 	void (*ctlq_reg_init)(struct idpf_ctlq_create_info *cq);
-	int (*intr_reg_init)(struct idpf_vport *vport);
+	int (*intr_reg_init)(struct idpf_aux_dev_info *dev_info,
+			     u16 num_vecs,
+			     struct idpf_q_vector *q_vectors,
+			     u16 *q_vector_idxs);
 	void (*mb_intr_reg_init)(struct idpf_adapter *adapter);
 	void (*reset_reg_init)(struct idpf_adapter *adapter);
 	void (*trigger_reset)(struct idpf_adapter *adapter,
@@ -271,16 +225,16 @@ struct idpf_port_stats {
  *	      group will yield total number of RX queues.
  * @rxq_model: Splitq queue or single queue queuing model
  * @rx_ptype_lkup: Lookup table for ptypes on RX
- * @adapter: back pointer to associated adapter
+ * @adapter: back pointer to associated Ethernet adapter
  * @netdev: Associated net_device. Each vport should have one and only one
- *	    associated netdev.
+ * 	    associated netdev.
  * @flags: See enum idpf_vport_flags
  * @vport_type: Default SRIOV, SIOV, etc.
  * @vport_id: Device given vport identifier
- * @idx: Software index in adapter vports struct
  * @default_vport: Use this vport if one isn't specified
  * @base_rxd: True if the driver should use base descriptors instead of flex
  * @num_q_vectors: Number of IRQ vectors allocated
+ * @msix_entries: MSIX entries table
  * @q_vectors: Array of queue vectors
  * @q_vector_idxs: Starting index of queue vectors
  * @max_mtu: device given max possible MTU
@@ -313,17 +267,17 @@ struct idpf_vport {
 	u32 rxq_model;
 	struct libeth_rx_pt *rx_ptype_lkup;
 
-	struct idpf_adapter *adapter;
+	struct idpf_eth_adapter *adapter;
 	struct net_device *netdev;
 	DECLARE_BITMAP(flags, IDPF_VPORT_FLAGS_NBITS);
 	u16 vport_type;
 	u32 vport_id;
-	u16 idx;
 	bool default_vport;
 	bool base_rxd;
 
 	u16 num_q_vectors;
 	struct idpf_q_vector *q_vectors;
+	struct msix_entry *msix_entries;
 	u16 *q_vector_idxs;
 	u16 max_mtu;
 	u8 default_mac_addr[ETH_ALEN];
@@ -470,7 +424,6 @@ struct idpf_vector_lifo {
  */
 struct idpf_vport_config {
 	struct idpf_vport_user_config_data user_config;
-	struct idpf_vport_max_q max_q;
 	struct virtchnl2_add_queues *req_qs_chunks;
 	spinlock_t mac_filter_list_lock;
 	DECLARE_BITMAP(flags, IDPF_VPORT_CONFIG_FLAGS_NBITS);
@@ -497,19 +450,10 @@ struct idpf_vc_xn_manager;
  * @mb_vector: Mailbox vector data
  * @vector_stack: Stack to store the msix vector indexes
  * @irq_mb_handler: Handler for hard interrupt for mailbox
- * @tx_timeout_count: Number of TX timeouts that have occurred
  * @avail_queues: Device given queue limits
- * @vports: Array to store vports created by the driver
- * @netdevs: Associated Vport netdevs
- * @vport_params_reqd: Vport params requested
- * @vport_params_recvd: Vport params received
- * @vport_ids: Array of device given vport identifiers
- * @vport_config: Vport config parameters
  * @max_vports: Maximum vports that can be allocated
- * @num_alloc_vports: Current number of vports allocated
- * @next_vport: Next free slot in pf->vport[] - 0-based!
- * @init_task: Initialization task
- * @init_wq: Workqueue for initialization task
+ * @adevs: List of pointers to the auxiliary devices
+ * @aux_shared: Info shared with the auxiliray devices
  * @serv_task: Periodically recurring maintenance task
  * @serv_wq: Workqueue for service task
  * @mbx_task: Task to handle mailbox interrupts
@@ -523,9 +467,6 @@ struct idpf_vc_xn_manager;
  * @dev_ops: See idpf_dev_ops
  * @num_vfs: Number of allocated VFs through sysfs. PF does not directly talk
  *	     to VFs but is used to initialize them
- * @crc_enable: Enable CRC insertion offload
- * @req_tx_splitq: TX split or single queue model to request
- * @req_rx_splitq: RX split or single queue model to request
  * @vport_ctrl_lock: Lock to protect the vport control flow
  * @vector_lock: Lock to protect vector distribution
  * @queue_lock: Lock to protect queue distribution
@@ -551,21 +492,11 @@ struct idpf_adapter {
 	struct idpf_vector_lifo vector_stack;
 	irqreturn_t (*irq_mb_handler)(int irq, void *data);
 
-	u32 tx_timeout_count;
 	struct idpf_avail_queue_info avail_queues;
-	struct idpf_vport **vports;
-	struct net_device **netdevs;
-	struct virtchnl2_create_vport **vport_params_reqd;
-	struct virtchnl2_create_vport **vport_params_recvd;
-	u32 *vport_ids;
-
-	struct idpf_vport_config **vport_config;
 	u16 max_vports;
-	u16 num_alloc_vports;
-	u16 next_vport;
+	struct idpf_auxiliary_device **adevs;
+	struct idpf_aux_shared aux_shared;
 
-	struct delayed_work init_task;
-	struct workqueue_struct *init_wq;
 	struct delayed_work serv_task;
 	struct workqueue_struct *serv_wq;
 	struct delayed_work mbx_task;
@@ -579,9 +510,6 @@ struct idpf_adapter {
 
 	struct idpf_dev_ops dev_ops;
 	int num_vfs;
-	bool crc_enable;
-	bool req_tx_splitq;
-	bool req_rx_splitq;
 
 	struct mutex vport_ctrl_lock;
 	struct mutex vector_lock;
@@ -606,7 +534,7 @@ static inline int idpf_is_queue_model_split(u16 q_model)
 #define idpf_is_cap_ena_all(adapter, field, flag) \
 	idpf_is_capability_ena(adapter, true, field, flag)
 
-bool idpf_is_capability_ena(struct idpf_adapter *adapter, bool all,
+bool idpf_is_capability_ena(struct idpf_eth_adapter *adapter, bool all,
 			    enum idpf_cap_field field, u64 flag);
 
 #define IDPF_CAP_RSS (\
@@ -682,26 +610,6 @@ static inline u16 idpf_get_max_vports(struct idpf_adapter *adapter)
 }
 
 /**
- * idpf_get_max_tx_bufs - Get max scatter-gather buffers supported by the device
- * @adapter: private data struct
- */
-static inline unsigned int idpf_get_max_tx_bufs(struct idpf_adapter *adapter)
-{
-	return adapter->caps.max_sg_bufs_per_tx_pkt;
-}
-
-/**
- * idpf_get_min_tx_pkt_len - Get min packet length supported by the device
- * @adapter: private data struct
- */
-static inline u8 idpf_get_min_tx_pkt_len(struct idpf_adapter *adapter)
-{
-	u8 pkt_len = adapter->caps.min_sso_packet_len;
-
-	return pkt_len ? pkt_len : IDPF_TX_MIN_PKT_LEN;
-}
-
-/**
  * idpf_get_reg_addr - Get BAR0 register address
  * @adapter: private data struct
  * @reg_offset: register offset value
@@ -742,75 +650,6 @@ static inline bool idpf_is_reset_in_prog(struct idpf_adapter *adapter)
 		test_bit(IDPF_HR_DRV_LOAD, adapter->flags));
 }
 
-/**
- * idpf_netdev_to_vport - get a vport handle from a netdev
- * @netdev: network interface device structure
- */
-static inline struct idpf_vport *idpf_netdev_to_vport(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	return np->vport;
-}
-
-/**
- * idpf_netdev_to_adapter - Get adapter handle from a netdev
- * @netdev: Network interface device structure
- */
-static inline struct idpf_adapter *idpf_netdev_to_adapter(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	return np->adapter;
-}
-
-/**
- * idpf_is_feature_ena - Determine if a particular feature is enabled
- * @vport: Vport to check
- * @feature: Netdev flag to check
- *
- * Returns true or false if a particular feature is enabled.
- */
-static inline bool idpf_is_feature_ena(const struct idpf_vport *vport,
-				       netdev_features_t feature)
-{
-	return vport->netdev->features & feature;
-}
-
-/**
- * idpf_get_max_tx_hdr_size -- get the size of tx header
- * @adapter: Driver specific private structure
- */
-static inline u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter)
-{
-	return le16_to_cpu(adapter->caps.max_tx_hdr_size);
-}
-
-/**
- * idpf_vport_ctrl_lock - Acquire the vport control lock
- * @netdev: Network interface device structure
- *
- * This lock should be used by non-datapath code to protect against vport
- * destruction.
- */
-static inline void idpf_vport_ctrl_lock(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	mutex_lock(&np->adapter->vport_ctrl_lock);
-}
-
-/**
- * idpf_vport_ctrl_unlock - Release the vport control lock
- * @netdev: Network interface device structure
- */
-static inline void idpf_vport_ctrl_unlock(struct net_device *netdev)
-{
-	struct idpf_netdev_priv *np = netdev_priv(netdev);
-
-	mutex_unlock(&np->adapter->vport_ctrl_lock);
-}
-
 void idpf_statistics_task(struct work_struct *work);
 void idpf_init_task(struct work_struct *work);
 void idpf_service_task(struct work_struct *work);
@@ -820,18 +659,26 @@ void idpf_dev_ops_init(struct idpf_adapter *adapter);
 void idpf_vf_dev_ops_init(struct idpf_adapter *adapter);
 int idpf_intr_req(struct idpf_adapter *adapter);
 void idpf_intr_rel(struct idpf_adapter *adapter);
-u16 idpf_get_max_tx_hdr_size(struct idpf_adapter *adapter);
 int idpf_initiate_soft_reset(struct idpf_vport *vport,
 			     enum idpf_vport_reset_cause reset_cause);
-void idpf_deinit_task(struct idpf_adapter *adapter);
-int idpf_req_rel_vector_indexes(struct idpf_adapter *adapter,
+int idpf_req_rel_vector_indexes(struct idpf_aux_dev_info *dev_info,
 				u16 *q_vector_idxs,
-				struct idpf_vector_info *vec_info);
-void idpf_set_ethtool_ops(struct net_device *netdev);
+				struct idpf_vector_info *vec_info,
+				struct msix_entry *msix_entries);
+struct idpf_vport *idpf_vport_alloc(struct idpf_eth_adapter *adapter);
+void idpf_vport_dealloc(struct idpf_vport *vport);
+int idpf_vport_open(struct idpf_vport *vport);
+void idpf_vport_stop(struct idpf_vport *vport);
 void idpf_vport_intr_write_itr(struct idpf_q_vector *q_vector,
 			       u16 itr, bool tx);
+int idpf_vport_intr_init_vec_idx(struct idpf_aux_dev_info *dev_info,
+				 u16 num_vecs,
+				 struct idpf_q_vector *q_vectors,
+				 u16 *q_vector_idxs);
 int idpf_sriov_configure(struct pci_dev *pdev, int num_vfs);
 
+int idpf_cfg_netdev(struct idpf_vport *vport);
+void idpf_decfg_netdev(struct idpf_vport *vport);
 u8 idpf_vport_get_hsplit(const struct idpf_vport *vport);
 bool idpf_vport_set_hsplit(const struct idpf_vport *vport, u8 val);
 
