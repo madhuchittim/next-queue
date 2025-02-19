@@ -1004,7 +1004,7 @@ int idpf_vport_singleq_napi_poll(struct napi_struct *napi, int budget);
 void idpf_vport_init_num_qs(struct idpf_vport *vport,
 			    struct virtchnl2_create_vport *vport_msg);
 void idpf_vport_calc_num_q_desc(struct idpf_vport *vport);
-int idpf_vport_calc_total_qs(struct idpf_adapter *adapter, u16 vport_index,
+int idpf_vport_calc_total_qs(struct idpf_eth_adapter *adapter,
 			     struct virtchnl2_create_vport *vport_msg,
 			     struct idpf_vport_max_q *max_q);
 void idpf_vport_calc_num_q_groups(struct idpf_vport *vport);

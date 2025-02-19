@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (C) 2023 Intel Corporation */
 
-#include "idpf.h"
+#include "idpf_eth.h"
 
 /**
  * idpf_get_rxnfc - command to get RX flow classification rules
@@ -16,20 +16,20 @@ static int idpf_get_rxnfc(struct net_device *netdev, struct ethtool_rxnfc *cmd,
 {
 	struct idpf_vport *vport;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	switch (cmd->cmd) {
 	case ETHTOOL_GRXRINGS:
 		cmd->data = vport->num_rxq;
-		idpf_vport_ctrl_unlock(netdev);
+		idpf_eth_ctrl_unlock(netdev);
 
 		return 0;
 	default:
 		break;
 	}
 
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return -EOPNOTSUPP;
 }
@@ -48,7 +48,7 @@ static u32 idpf_get_rxfh_key_size(struct net_device *netdev)
 	if (!idpf_is_cap_ena_all(np->adapter, IDPF_RSS_CAPS, IDPF_CAP_RSS))
 		return -EOPNOTSUPP;
 
-	user_config = &np->adapter->vport_config[np->vport_idx]->user_config;
+	user_config = &np->adapter->vport_config.user_config;
 
 	return user_config->rss_data.rss_key_size;
 }
@@ -67,7 +67,7 @@ static u32 idpf_get_rxfh_indir_size(struct net_device *netdev)
 	if (!idpf_is_cap_ena_all(np->adapter, IDPF_RSS_CAPS, IDPF_CAP_RSS))
 		return -EOPNOTSUPP;
 
-	user_config = &np->adapter->vport_config[np->vport_idx]->user_config;
+	user_config = &np->adapter->vport_config.user_config;
 
 	return user_config->rss_data.rss_lut_size;
 }
@@ -83,12 +83,12 @@ static int idpf_get_rxfh(struct net_device *netdev,
 			 struct ethtool_rxfh_param *rxfh)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
+	struct idpf_eth_adapter *adapter;
 	struct idpf_rss_data *rss_data;
-	struct idpf_adapter *adapter;
 	int err = 0;
 	u16 i;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 
 	adapter = np->adapter;
 
@@ -97,7 +97,7 @@ static int idpf_get_rxfh(struct net_device *netdev,
 		goto unlock_mutex;
 	}
 
-	rss_data = &adapter->vport_config[np->vport_idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config.user_config.rss_data;
 	if (np->state != __IDPF_VPORT_UP)
 		goto unlock_mutex;
 
@@ -112,7 +112,7 @@ static int idpf_get_rxfh(struct net_device *netdev,
 	}
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -131,23 +131,23 @@ static int idpf_set_rxfh(struct net_device *netdev,
 			 struct netlink_ext_ack *extack)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
+	struct idpf_eth_adapter *adapter;
 	struct idpf_rss_data *rss_data;
-	struct idpf_adapter *adapter;
 	struct idpf_vport *vport;
 	int err = 0;
 	u16 lut;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
-	adapter = vport->adapter;
+	adapter = np->adapter;
 
 	if (!idpf_is_cap_ena_all(adapter, IDPF_RSS_CAPS, IDPF_CAP_RSS)) {
 		err = -EOPNOTSUPP;
 		goto unlock_mutex;
 	}
 
-	rss_data = &adapter->vport_config[vport->idx]->user_config.rss_data;
+	rss_data = &adapter->vport_config.user_config.rss_data;
 	if (np->state != __IDPF_VPORT_UP)
 		goto unlock_mutex;
 
@@ -168,7 +168,7 @@ static int idpf_set_rxfh(struct net_device *netdev,
 	err = idpf_config_rss(vport);
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -186,10 +186,12 @@ static void idpf_get_channels(struct net_device *netdev,
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport_config *vport_config;
+	struct idpf_vport_max_q *max_q;
 	u16 num_txq, num_rxq;
 	u16 combined;
 
-	vport_config = np->adapter->vport_config[np->vport_idx];
+	vport_config = &np->adapter->vport_config;
+	max_q = &np->adapter->dev_info->caps.q_info;
 
 	num_txq = vport_config->user_config.num_req_tx_qs;
 	num_rxq = vport_config->user_config.num_req_rx_qs;
@@ -197,10 +199,9 @@ static void idpf_get_channels(struct net_device *netdev,
 	combined = min(num_txq, num_rxq);
 
 	/* Report maximum channels */
-	ch->max_combined = min_t(u16, vport_config->max_q.max_txq,
-				 vport_config->max_q.max_rxq);
-	ch->max_rx = vport_config->max_q.max_rxq;
-	ch->max_tx = vport_config->max_q.max_txq;
+	ch->max_combined = min_t(u16, max_q->max_txq, max_q->max_rxq);
+	ch->max_rx = max_q->max_rxq;
+	ch->max_tx = max_q->max_txq;
 
 	ch->max_other = IDPF_MAX_MBXQ;
 	ch->other_count = IDPF_MAX_MBXQ;
@@ -221,25 +222,25 @@ static void idpf_get_channels(struct net_device *netdev,
 static int idpf_set_channels(struct net_device *netdev,
 			     struct ethtool_channels *ch)
 {
+	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport_config *vport_config;
+	struct idpf_vport_max_q *max_q;
 	unsigned int num_req_tx_q;
 	unsigned int num_req_rx_q;
 	struct idpf_vport *vport;
 	u16 num_txq, num_rxq;
-	struct device *dev;
 	int err = 0;
-	u16 idx;
 
 	if (ch->rx_count && ch->tx_count) {
 		netdev_err(netdev, "Dedicated RX or TX channels cannot be used simultaneously\n");
 		return -EINVAL;
 	}
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
-	idx = vport->idx;
-	vport_config = vport->adapter->vport_config[idx];
+	vport_config = &np->adapter->vport_config;
+	max_q = &np->adapter->dev_info->caps.q_info;
 
 	num_txq = vport_config->user_config.num_req_tx_qs;
 	num_rxq = vport_config->user_config.num_req_rx_qs;
@@ -247,20 +248,17 @@ static int idpf_set_channels(struct net_device *netdev,
 	num_req_tx_q = ch->combined_count + ch->tx_count;
 	num_req_rx_q = ch->combined_count + ch->rx_count;
 
-	dev = &vport->adapter->pdev->dev;
 	/* It's possible to specify number of queues that exceeds max.
 	 * Stack checks max combined_count and max [tx|rx]_count but not the
 	 * max combined_count + [tx|rx]_count. These checks should catch that.
 	 */
-	if (num_req_tx_q > vport_config->max_q.max_txq) {
-		dev_info(dev, "Maximum TX queues is %d\n",
-			 vport_config->max_q.max_txq);
+	if (num_req_tx_q > max_q->max_txq) {
+		netdev_err(netdev, "Maximum TX queues is %d\n", max_q->max_txq);
 		err = -EINVAL;
 		goto unlock_mutex;
 	}
-	if (num_req_rx_q > vport_config->max_q.max_rxq) {
-		dev_info(dev, "Maximum RX queues is %d\n",
-			 vport_config->max_q.max_rxq);
+	if (num_req_rx_q > max_q->max_rxq) {
+		netdev_err(netdev, "Maximum RX queues is %d\n", max_q->max_rxq);
 		err = -EINVAL;
 		goto unlock_mutex;
 	}
@@ -279,7 +277,7 @@ static int idpf_set_channels(struct net_device *netdev,
 	}
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -301,7 +299,7 @@ static void idpf_get_ringparam(struct net_device *netdev,
 {
 	struct idpf_vport *vport;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	ring->rx_max_pending = IDPF_MAX_RXQ_DESC;
@@ -311,7 +309,7 @@ static void idpf_get_ringparam(struct net_device *netdev,
 
 	kring->tcp_data_split = idpf_vport_get_hsplit(vport);
 
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 }
 
 /**
@@ -329,16 +327,14 @@ static int idpf_set_ringparam(struct net_device *netdev,
 			      struct kernel_ethtool_ringparam *kring,
 			      struct netlink_ext_ack *ext_ack)
 {
+	struct idpf_netdev_priv *np = netdev_priv(netdev);
 	struct idpf_vport_user_config_data *config_data;
 	u32 new_rx_count, new_tx_count;
 	struct idpf_vport *vport;
 	int i, err = 0;
-	u16 idx;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
-
-	idx = vport->idx;
 
 	if (ring->tx_pending < IDPF_MIN_TXQ_DESC) {
 		netdev_err(netdev, "Descriptors requested (Tx: %u) is less than min supported (%u)\n",
@@ -379,7 +375,7 @@ static int idpf_set_ringparam(struct net_device *netdev,
 		goto unlock_mutex;
 	}
 
-	config_data = &vport->adapter->vport_config[idx]->user_config;
+	config_data = &np->adapter->vport_config.user_config;
 	config_data->num_req_txq_desc = new_tx_count;
 	config_data->num_req_rxq_desc = new_rx_count;
 
@@ -394,7 +390,7 @@ static int idpf_set_ringparam(struct net_device *netdev,
 	err = idpf_initiate_soft_reset(vport, IDPF_SR_Q_DESC_CHANGE);
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -547,22 +543,22 @@ static void idpf_add_stat_strings(u8 **p, const struct idpf_stats *stats,
 static void idpf_get_stat_strings(struct net_device *netdev, u8 *data)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
-	struct idpf_vport_config *vport_config;
+	struct idpf_vport_max_q *max_q;
 	unsigned int i;
 
 	idpf_add_stat_strings(&data, idpf_gstrings_port_stats,
 			      IDPF_PORT_STATS_LEN);
 
-	vport_config = np->adapter->vport_config[np->vport_idx];
+	max_q = &np->adapter->dev_info->caps.q_info;
 	/* It's critical that we always report a constant number of strings and
 	 * that the strings are reported in the same order regardless of how
 	 * many queues are actually in use.
 	 */
-	for (i = 0; i < vport_config->max_q.max_txq; i++)
+	for (i = 0; i < max_q->max_txq; i++)
 		idpf_add_qstat_strings(&data, idpf_gstrings_tx_queue_stats,
 				       "tx", i);
 
-	for (i = 0; i < vport_config->max_q.max_rxq; i++)
+	for (i = 0; i < max_q->max_rxq; i++)
 		idpf_add_qstat_strings(&data, idpf_gstrings_rx_queue_stats,
 				       "rx", i);
 }
@@ -596,13 +592,12 @@ static void idpf_get_strings(struct net_device *netdev, u32 sset, u8 *data)
 static int idpf_get_sset_count(struct net_device *netdev, int sset)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
-	struct idpf_vport_config *vport_config;
+	struct idpf_vport_max_q *max_q;
 	u16 max_txq, max_rxq;
 
 	if (sset != ETH_SS_STATS)
 		return -EINVAL;
 
-	vport_config = np->adapter->vport_config[np->vport_idx];
 	/* This size reported back here *must* be constant throughout the
 	 * lifecycle of the netdevice, i.e. we must report the maximum length
 	 * even for queues that don't technically exist.  This is due to the
@@ -613,8 +608,9 @@ static int idpf_get_sset_count(struct net_device *netdev, int sset)
 	 * of this call chain it will lead to userspace crashing/accessing bad
 	 * data through buffer under/overflow.
 	 */
-	max_txq = vport_config->max_q.max_txq;
-	max_rxq = vport_config->max_q.max_rxq;
+	max_q = &np->adapter->dev_info->caps.q_info;
+	max_txq = max_q->max_txq;
+	max_rxq = max_q->max_rxq;
 
 	return IDPF_PORT_STATS_LEN + (IDPF_TX_QUEUE_STATS_LEN * max_txq) +
 	       (IDPF_RX_QUEUE_STATS_LEN * max_rxq);
@@ -869,18 +865,18 @@ static void idpf_get_ethtool_stats(struct net_device *netdev,
 				   u64 *data)
 {
 	struct idpf_netdev_priv *np = netdev_priv(netdev);
-	struct idpf_vport_config *vport_config;
+	struct idpf_vport_max_q *max_q;
 	struct idpf_vport *vport;
 	unsigned int total = 0;
 	unsigned int i, j;
 	bool is_splitq;
 	u16 qtype;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	if (np->state != __IDPF_VPORT_UP) {
-		idpf_vport_ctrl_unlock(netdev);
+		idpf_eth_ctrl_unlock(netdev);
 
 		return;
 	}
@@ -905,13 +901,13 @@ static void idpf_get_ethtool_stats(struct net_device *netdev,
 		}
 	}
 
-	vport_config = vport->adapter->vport_config[vport->idx];
+	max_q = &np->adapter->dev_info->caps.q_info;
 	/* It is critical we provide a constant number of stats back to
 	 * userspace regardless of how many queues are actually in use because
 	 * there is no way to inform userspace the size has changed between
 	 * ioctl calls. This will fill in any missing stats with zero.
 	 */
-	for (; total < vport_config->max_q.max_txq; total++)
+	for (; total < max_q->max_txq; total++)
 		idpf_add_empty_queue_stats(&data, VIRTCHNL2_QUEUE_TYPE_TX);
 	total = 0;
 
@@ -942,12 +938,12 @@ static void idpf_get_ethtool_stats(struct net_device *netdev,
 		}
 	}
 
-	for (; total < vport_config->max_q.max_rxq; total++)
+	for (; total < max_q->max_rxq; total++)
 		idpf_add_empty_queue_stats(&data, VIRTCHNL2_QUEUE_TYPE_RX);
 
 	rcu_read_unlock();
 
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 }
 
 /**
@@ -1028,7 +1024,7 @@ static int idpf_get_q_coalesce(struct net_device *netdev,
 	const struct idpf_vport *vport;
 	int err = 0;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	if (np->state != __IDPF_VPORT_UP)
@@ -1048,7 +1044,7 @@ static int idpf_get_q_coalesce(struct net_device *netdev,
 				      VIRTCHNL2_QUEUE_TYPE_TX);
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -1203,7 +1199,7 @@ static int idpf_set_coalesce(struct net_device *netdev,
 	struct idpf_vport *vport;
 	int i, err = 0;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	if (np->state != __IDPF_VPORT_UP)
@@ -1222,7 +1218,7 @@ static int idpf_set_coalesce(struct net_device *netdev,
 	}
 
 unlock_mutex:
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -1241,19 +1237,19 @@ static int idpf_set_per_q_coalesce(struct net_device *netdev, u32 q_num,
 	struct idpf_vport *vport;
 	int err;
 
-	idpf_vport_ctrl_lock(netdev);
+	idpf_eth_ctrl_lock(netdev);
 	vport = idpf_netdev_to_vport(netdev);
 
 	err = idpf_set_q_coalesce(vport, ec, q_num, false);
 	if (err) {
-		idpf_vport_ctrl_unlock(netdev);
+		idpf_eth_ctrl_unlock(netdev);
 
 		return err;
 	}
 
 	err = idpf_set_q_coalesce(vport, ec, q_num, true);
 
-	idpf_vport_ctrl_unlock(netdev);
+	idpf_eth_ctrl_unlock(netdev);
 
 	return err;
 }
@@ -1266,7 +1262,7 @@ static int idpf_set_per_q_coalesce(struct net_device *netdev, u32 q_num,
  */
 static u32 idpf_get_msglevel(struct net_device *netdev)
 {
-	struct idpf_adapter *adapter = idpf_netdev_to_adapter(netdev);
+	struct idpf_eth_adapter *adapter = idpf_netdev_to_adapter(netdev);
 
 	return adapter->msg_enable;
 }
@@ -1281,7 +1277,7 @@ static u32 idpf_get_msglevel(struct net_device *netdev)
  */
 static void idpf_set_msglevel(struct net_device *netdev, u32 data)
 {
-	struct idpf_adapter *adapter = idpf_netdev_to_adapter(netdev);
+	struct idpf_eth_adapter *adapter = idpf_netdev_to_adapter(netdev);
 
 	adapter->msg_enable = data;
 }
